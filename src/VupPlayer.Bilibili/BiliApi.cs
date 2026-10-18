@@ -354,6 +354,14 @@ public sealed class BiliApi : IDisposable
         return new SearchPage(d?["numResults"]?.GetValue<int>() ?? items.Count, page, items);
     }
 
+    /// <summary>按 UID 查用户名（用户名片接口）。</summary>
+    public async Task<string?> GetUserNameAsync(long mid, CancellationToken ct = default)
+    {
+        await EnsureBuvidAsync(ct).ConfigureAwait(false);
+        var node = await GetJsonAsync($"https://api.bilibili.com/x/web-interface/card?mid={mid}", ct).ConfigureAwait(false);
+        return node["data"]?["card"]?["name"]?.GetValue<string>();
+    }
+
     /// <summary>搜索 B 站用户（用来把主播名对应到唯一的 UID）。</summary>
     public async Task<IReadOnlyList<UserSearchItem>> SearchUsersAsync(string keyword, CancellationToken ct = default)
     {

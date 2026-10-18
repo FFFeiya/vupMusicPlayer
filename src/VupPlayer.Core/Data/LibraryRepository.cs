@@ -18,6 +18,11 @@ public sealed class TrackUpdate
     public double? EndSec { get; set; }
 }
 
+public sealed record VideoIdentifyRow(string Bvid, string Title, string? Description, long UpMid, IReadOnlyList<long> TrackIds, long? StreamerId, string? Tags);
+
+/// <summary>导入时对一首曲目的猜测。</summary>
+public sealed record TrackGuess(string? Song, string? Streamer, long? StreamerMid = null, string? ExtraAlias = null, IReadOnlyList<string>? Tags = null);
+
 public sealed class NameCount
 {
     public long Id { get; set; }
@@ -101,7 +106,16 @@ public sealed class LibraryRepository(Database db)
     /// 导入一个视频及其分P。已存在的分P只更新分P标题和时长，保留用户编辑过的元数据。
     /// 返回新建的曲目 id 列表。
     /// </summary>
-    public IReadOnlyList<long> ImportVideo(Video v, IEnumerable<Track> pages, Func<Track, (string? song, string? streamer)>? guess = null)
+    public IReadOnlyList<long> ImportVideo(Video v, IEnumerable<Track> pages, Func<Track, (string? song, string? streamer)>? guess)
+        => ImportVideo(v, pages, guess is null ? null : t => { var (s, st) = guess(t); return new TrackGuess(s, st); });
+
+    public IReadOnlyList<long> ImportVideo(Video v, IEnumerable<Track> pages) => ImportVideo(v, pages, (Func<Track, TrackGuess>?)null);
+
+    /// <summary>
+    /// 导入一个视频及其分P（完整版）。guess 可以给出主播的 B 站 UID：有 UID 时优先按 UID 找主播，
+    /// 找到名字对应的主播后补记 UID；ExtraAlias 会记为该主播的别名；Tags 会加到新建的曲目上。
+    /// </summary>
+    public IReadOnlyList<long> ImportVideo(Video v, IEnumerable<Track> pages, Func<Track, TrackGuess>? guess)
     {
         using var c = Db.Open();
         using var tx = c.BeginTransaction();
@@ -117,18 +131,23 @@ public sealed class LibraryRepository(Database db)
                     new { p.PartTitle, p.DurationSec, p.Page, id }, tx);
                 continue;
             }
+            TrackGuess? g = null;
             if (guess is not null && p.SongTitle is null && p.StreamerId is null)
             {
-                var (song, streamer) = guess(p);
-                p.SongTitle = song;
-                if (!string.IsNullOrWhiteSpace(streamer) && !Metadata.StreamerMatcher.IsNotPerson(streamer!))
-                    p.StreamerId = GetOrCreateStreamer(c, tx, streamer!, fuzzy: true);
+                g = guess(p);
+                p.SongTitle = g.Song;
+                p.StreamerId = ResolveStreamer(c, tx, g.Streamer, g.StreamerMid, g.ExtraAlias, fuzzy: true);
             }
             var newId = c.ExecuteScalar<long>("""
                 INSERT INTO tracks (bvid, cid, page, part_title, duration_sec, song_title, streamer_id)
                 VALUES (@Bvid, @Cid, @Page, @PartTitle, @DurationSec, @SongTitle, @StreamerId);
                 SELECT last_insert_rowid();
                 """, p, tx);
+            foreach (var tag in g?.Tags ?? [])
+            {
+                var tagId = GetOrCreateTag(c, tx, tag);
+                c.Execute("INSERT OR IGNORE INTO track_tags (track_id, tag_id) VALUES (@newId, @tagId)", new { newId, tagId }, tx);
+            }
             created.Add(newId);
         }
         tx.Commit();
@@ -345,6 +364,71 @@ public sealed class LibraryRepository(Database db)
         list.Add(alias.Trim());
         c.Execute("UPDATE streamers SET aliases = @json WHERE id = @streamerId",
             new { json = System.Text.Json.JsonSerializer.Serialize(list, AliasJson), streamerId }, tx);
+    }
+
+    /// <summary>
+    /// 按 UID → 名字的顺序确定主播。UID 命中直接返回；否则按名字找或建，并在该主播还没有 UID 时补记。
+    /// </summary>
+    static long? ResolveStreamer(SqliteConnection c, SqliteTransaction? tx, string? name, long? mid, string? extraAlias, bool fuzzy)
+    {
+        long? id = null;
+        if (mid is long m)
+            id = c.ExecuteScalar<long?>("SELECT id FROM streamers WHERE mid = @m", new { m }, tx);
+        if (id is null && !string.IsNullOrWhiteSpace(name) && !Metadata.StreamerMatcher.IsNotPerson(name))
+        {
+            id = GetOrCreateStreamer(c, tx, name.Trim(), fuzzy);
+            if (mid is long m2)
+                c.Execute("UPDATE streamers SET mid = @m2 WHERE id = @id AND mid IS NULL AND NOT EXISTS (SELECT 1 FROM streamers WHERE mid = @m2)",
+                    new { m2, id }, tx);
+        }
+        if (id is long sid && !string.IsNullOrWhiteSpace(extraAlias) && !Metadata.StreamerMatcher.IsNotPerson(extraAlias))
+            AddAlias(c, tx, sid, extraAlias.Trim());
+        return id;
+    }
+
+    /// <summary>每个视频一行：简介、切片 man、曲目 id、（多数曲目的）当前主播、第一首的标签。用于按简介回填主播。</summary>
+    public IReadOnlyList<VideoIdentifyRow> GetVideosForIdentify()
+    {
+        using var c = Db.Open();
+        var rows = c.Query<(string bvid, string title, string? description, long upMid, long trackId, long? streamerId, string? tags)>("""
+            SELECT v.bvid, v.title, v.description, v.up_mid, t.id, t.streamer_id,
+                   (SELECT GROUP_CONCAT(g.name, ',') FROM track_tags tt JOIN tags g ON g.id = tt.tag_id WHERE tt.track_id = t.id)
+            FROM videos v JOIN tracks t ON t.bvid = v.bvid
+            WHERE v.description IS NOT NULL AND v.description <> ''
+            ORDER BY v.bvid, t.page
+            """);
+        return rows.GroupBy(r => r.bvid).Select(g =>
+        {
+            var first = g.First();
+            var streamer = g.Where(r => r.streamerId is not null).GroupBy(r => r.streamerId).OrderByDescending(x => x.Count()).FirstOrDefault()?.Key;
+            return new VideoIdentifyRow(first.bvid, first.title, first.description, first.upMid, g.Select(r => r.trackId).ToList(), streamer, first.tags);
+        }).ToList();
+    }
+
+    public long? GetStreamerIdByMid(long mid)
+    {
+        using var c = Db.Open();
+        return c.ExecuteScalar<long?>("SELECT id FROM streamers WHERE mid = @mid", new { mid });
+    }
+
+    /// <summary>给一组曲目设置主播（按 UID / 名字解析），可同时加标签。返回实际改动的曲目数。</summary>
+    public int AssignStreamer(IReadOnlyCollection<long> trackIds, string? name, long? mid, string? extraAlias, IReadOnlyList<string>? addTags)
+    {
+        using var c = Db.Open();
+        using var tx = c.BeginTransaction();
+        var sid = ResolveStreamer(c, tx, name, mid, extraAlias, fuzzy: false);
+        var n = 0;
+        foreach (var id in trackIds)
+        {
+            if (sid is long s) n += c.Execute("UPDATE tracks SET streamer_id = @s WHERE id = @id AND (streamer_id IS NULL OR streamer_id <> @s)", new { s, id }, tx);
+            foreach (var tag in addTags ?? [])
+            {
+                var tagId = GetOrCreateTag(c, tx, tag);
+                c.Execute("INSERT OR IGNORE INTO track_tags (track_id, tag_id) VALUES (@id, @tagId)", new { id, tagId }, tx);
+            }
+        }
+        tx.Commit();
+        return n;
     }
 
     public long GetOrCreateStreamer(string name)

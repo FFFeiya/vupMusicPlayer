@@ -97,6 +97,30 @@ public sealed class StreamerTools(LibraryRepository repo)
         return LibraryTools.Out(new { tracks_cleared = n });
     }
 
+    [McpServerTool(Name = "identify_streamers_from_descriptions", OpenWorld = true)]
+    [Description("""
+        按视频简介检查整个曲库的主播。切片 man 通常会在简介里写主播名字和个人主页链接（带 UID），这是最可靠的身份证据。
+        列出：没有主播的、主播和简介不一致的、可以补记 UID 的、简介里有多位主播（加「合唱」标签）的。
+        先用 apply=false 预览，看过没问题再 apply=true。导入新视频时已经自动按简介识别，这个工具用于整理旧数据。
+        """)]
+    public async Task<string> IdentifyStreamersFromDescriptions(bool apply = false, [Description("预览时最多列出多少条")] int limit = 40)
+    {
+        var identifier = new VupPlayer.Bilibili.StreamerIdentifier(BiliTools.Api.Value, repo);
+        var changes = await identifier.ScanLibraryAsync(apply);
+        if (apply) await NotifyAsync();
+        return LibraryTools.Out(new
+        {
+            applied = apply,
+            videos = changes.Count,
+            tracks = changes.Sum(c => c.TrackIds.Count),
+            by_reason = changes.GroupBy(c => c.Reason.Split('，')[0]).Select(g => new { reason = g.Key, videos = g.Count() }),
+            items = changes.Take(Math.Clamp(limit, 1, 500)).Select(c => new
+            {
+                c.Bvid, c.Title, from = c.From, to = c.To, mid = c.Mid, add_tags = c.AddTags.Count > 0 ? c.AddTags : null, c.Reason,
+            }),
+        });
+    }
+
     [McpServerTool(Name = "fill_streamer_by_uploader")]
     [Description("""
         给没有主播的曲目补主播：如果它的切片 man 至少 10 首已标注的切片里 90% 以上是同一个主播，就归给这个主播。

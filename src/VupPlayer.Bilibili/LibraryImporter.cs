@@ -47,7 +47,7 @@ public sealed class LibraryImporter(BiliApi api, YtDlp ytdlp, LibraryRepository 
                     ? await api.GetVideoAsync(link.Bvid, ct).ConfigureAwait(false)
                     : await api.GetVideoByAidAsync(link.Aid!.Value, ct).ConfigureAwait(false);
                 if (repo.HasVideo(v.Bvid)) result.AlreadyInLibrary++;
-                Save(v, result, known);
+                await SaveAsync(v, result, known, ct).ConfigureAwait(false);
                 progress?.Report(new ImportProgress(v.Title, 1, 1));
                 break;
 
@@ -139,11 +139,11 @@ public sealed class LibraryImporter(BiliApi api, YtDlp ytdlp, LibraryRepository 
                         // 单P视频：收藏夹里的信息已经够用，省一次请求
                         var v = new BiliVideo(item.Bvid, 0, item.Title, item.Cover, item.Desc, item.Pubdate,
                             item.UpMid, item.UpName, [new BiliPage(cid, 1, item.Title, item.Duration)], null, null);
-                        Save(v, result, known);
+                        await SaveAsync(v, result, known, ct).ConfigureAwait(false);
                     }
                     else
                     {
-                        Save(await api.GetVideoAsync(item.Bvid, ct).ConfigureAwait(false), result, known);
+                        await SaveAsync(await api.GetVideoAsync(item.Bvid, ct).ConfigureAwait(false), result, known, ct).ConfigureAwait(false);
                     }
                     repo.LinkSourceVideo(sourceId.Value, item.Bvid);
                 }
@@ -176,7 +176,7 @@ public sealed class LibraryImporter(BiliApi api, YtDlp ytdlp, LibraryRepository 
             if (repo.HasVideo(bvid)) { result.AlreadyInLibrary++; repo.LinkSourceVideo(sourceId, bvid); continue; }
             try
             {
-                Save(await api.GetVideoAsync(bvid, ct).ConfigureAwait(false), result, known);
+                await SaveAsync(await api.GetVideoAsync(bvid, ct).ConfigureAwait(false), result, known, ct).ConfigureAwait(false);
                 repo.LinkSourceVideo(sourceId, bvid);
             }
             catch (BiliApiException ex) when (!ex.IsRiskControl)
@@ -187,7 +187,26 @@ public sealed class LibraryImporter(BiliApi api, YtDlp ytdlp, LibraryRepository 
         repo.MarkSourceSynced(sourceId);
     }
 
-    void Save(BiliVideo v, ImportResult result, List<string> known)
+    StreamerIdentifier? _identifier;
+    StreamerIdentifier Identifier => _identifier ??= new StreamerIdentifier(api, repo);
+
+    async Task SaveAsync(BiliVideo v, ImportResult result, List<string> known, CancellationToken ct)
+    {
+        // 主播判断的优先级：简介里的空间链接（UID）> 简介里写的名字 > 标题 > 切片 man 的主力主播
+        var titleStreamer = TitleParser.Guess(v.Title, null, 1, known).Streamer;
+        StreamerDecision? fromDesc = null;
+        try
+        {
+            fromDesc = await Identifier.FromDescriptionAsync(v.Desc, v.OwnerMid, titleStreamer, ct).ConfigureAwait(false);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            // 简介解析失败不影响导入
+        }
+        Save(v, result, known, fromDesc);
+    }
+
+    void Save(BiliVideo v, ImportResult result, List<string> known, StreamerDecision? fromDesc)
     {
         var isNew = !repo.HasVideo(v.Bvid);
         var video = new Video
@@ -202,10 +221,16 @@ public sealed class LibraryImporter(BiliApi api, YtDlp ytdlp, LibraryRepository 
         var created = repo.ImportVideo(video, pages, t =>
         {
             var (song, streamer) = TitleParser.Guess(v.Title, t.PartTitle, pages.Count, known);
+            if (fromDesc is { } d && (d.Name is not null || d.Mid is not null))
+            {
+                var name = d.Name ?? streamer;
+                if (name is not null && !known.Contains(name, StringComparer.OrdinalIgnoreCase)) known.Add(name);
+                return new TrackGuess(song, name, d.Mid, d.ExtraAlias, d.Tags);
+            }
             // 标题里猜不出主播：这个切片 man 基本只切一个主播的话，就归给这个主播
             if (streamer is null && UploaderPrior().TryGetValue(v.OwnerMid, out var dominant)) streamer = dominant;
             if (streamer is not null && !known.Contains(streamer, StringComparer.OrdinalIgnoreCase)) known.Add(streamer);
-            return (song, streamer);
+            return new TrackGuess(song, streamer);
         });
         if (isNew) result.VideosAdded++;
         if (!result.Bvids.Contains(v.Bvid)) result.Bvids.Add(v.Bvid);

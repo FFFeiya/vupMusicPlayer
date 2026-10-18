@@ -32,6 +32,8 @@ builder.Services
               3. 用 import_from_bilibili 导入，queue 默认 next（除非用户说立刻播放用 now）；如果选中的是多P合集，传 match=歌名。
               4. 导入后检查返回的 song_title / streamer，不对就用 update_tracks 修正。
             - 「加入播放器」默认理解为：导入曲库 + 排在下一首播放。
+            - 视频简介通常写着主播名字和个人主页链接（UID），是最可靠的身份证据。整理旧数据先用
+              identify_streamers_from_descriptions（apply=false 预览，再 apply=true）；导入新视频时已自动按简介识别。
             - 整理主播身份：find_similar_streamers 找疑似重复和非人名 → 拿不准时 search_bilibili_user 看两个名字是否同一个 UID
               → merge_streamers 合并（被合并的名字自动成为别名）/ delete_streamer 删除非人名 → update_streamer 记下 UID
               → fill_streamer_by_uploader 先预览再应用，给没主播的曲目按切片 man 补上。
