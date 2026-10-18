@@ -1,0 +1,11 @@
+bin/
+obj/
+dist/
+.vs/
+*.user
+*.suo
+TestResults/
+
+# 运行时依赖由 scripts/fetch-deps.ps1 下载
+tools/*.dll
+tools/*.exe
