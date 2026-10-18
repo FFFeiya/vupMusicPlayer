@@ -130,15 +130,30 @@ public class LinkParserTests
 public class StreamLineTests
 {
     [Fact]
-    public void BuildCandidates_PrimaryFirst_ThenBackups_ThenMirrors()
+    public void BuildCandidates_DomesticPrimaryFirst_ThenBackups_ThenMirrors()
+    {
+        var prefs = new StreamPreferences();
+        var lines = prefs.BuildCandidates(
+            "https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/a.m4s?deadline=1",
+            ["https://upos-sz-mirrorhw.bilivideo.com/upgcxcode/a.m4s?deadline=1"]);
+        Assert.StartsWith("https://upos-sz-mirrorcos.bilivideo.com/", lines[0]);
+        Assert.StartsWith("https://upos-sz-mirrorhw.bilivideo.com/", lines[1]);
+        Assert.StartsWith("https://upos-sz-mirrorali.bilivideo.com/", lines[2]);
+        Assert.Equal(lines.Count, lines.Distinct().Count());
+    }
+
+    [Fact]
+    public void BuildCandidates_OverseasPrimary_DomesticMirrorsFirst()
     {
         var prefs = new StreamPreferences();
         var lines = prefs.BuildCandidates(
             "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/a.m4s?deadline=1&os=cosovbv",
             ["https://upos-hz-mirrorakam.akamaized.net/upgcxcode/a.m4s?hdnts=x"]);
-        Assert.StartsWith("https://upos-sz-mirrorcosov.bilivideo.com/", lines[0]);
-        Assert.StartsWith("https://upos-hz-mirrorakam.akamaized.net/", lines[1]);
-        Assert.Contains(lines, l => l.StartsWith("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/a.m4s?deadline=1&os=cosovbv"));
+        Assert.StartsWith("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/a.m4s?deadline=1&os=cosovbv", lines[0]);
+        Assert.StartsWith("https://upos-sz-mirror08c.bilivideo.com/", lines[1]);
+        Assert.StartsWith("https://upos-sz-mirrorhw.bilivideo.com/", lines[2]);
+        Assert.StartsWith("https://upos-sz-mirrorcosov.bilivideo.com/", lines[3]);
+        Assert.StartsWith("https://upos-hz-mirrorakam.akamaized.net/", lines[4]);
         Assert.Equal(lines.Count, lines.Distinct().Count());
         // akamai 地址的签名不同，不能拿来换服务器名
         Assert.DoesNotContain(lines, l => l.Contains("akamaized") && l.Contains("deadline"));

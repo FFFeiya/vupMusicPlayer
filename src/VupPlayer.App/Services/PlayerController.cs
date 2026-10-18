@@ -43,6 +43,7 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     readonly DispatcherTimer _watchdog;
     double _watchPos = -1;
     DateTime _watchSince = DateTime.UtcNow;
+    DateTime? _bufferingSince;
 
     DateTime _lastLoadAt;
 
@@ -93,19 +94,29 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         if (_mpv is null || Current is null || !IsPlaying || IsLoading)
         {
             _watchPos = -1;
+            _bufferingSince = null;
             return;
         }
-        if (Math.Abs(_lastPos - _watchPos) > 0.05)
+        // 一直在缓冲：进度可能还在一点点挪（音频先播、画面卡住），光看进度发现得太晚
+        _bufferingSince = IsBuffering ? _bufferingSince ?? DateTime.UtcNow : null;
+        var bufferingStall = _bufferingSince is { } bs && DateTime.UtcNow - bs >= TimeSpan.FromSeconds(6);
+        if (!bufferingStall)
         {
-            _watchPos = _lastPos;
-            _watchSince = DateTime.UtcNow;
-            return;
+            if (Math.Abs(_lastPos - _watchPos) > 0.05)
+            {
+                _watchPos = _lastPos;
+                _watchSince = DateTime.UtcNow;
+                return;
+            }
+            if (DateTime.UtcNow - _watchSince < TimeSpan.FromSeconds(8)) return;
         }
-        if (DateTime.UtcNow - _watchSince < TimeSpan.FromSeconds(8)) return;
 
         var dur = EffectiveDuration();
-        AppLog.Write($"watchdog: 进度卡在 {_lastPos:0.0}/{dur:0.0} 超过 8 秒");
+        AppLog.Write(bufferingStall
+            ? $"watchdog: 在 {_lastPos:0.0}/{dur:0.0} 缓冲超过 6 秒"
+            : $"watchdog: 进度卡在 {_lastPos:0.0}/{dur:0.0} 超过 8 秒");
         _watchPos = -1;
+        _bufferingSince = null;
         if (dur > 0 && dur - _lastPos < 4)
         {
             _ = NextAsync(userInitiated: false);

@@ -29,7 +29,11 @@ public sealed class StreamPreferences
         "upos-sz-mirrorbd.bilivideo.com",
     ];
 
-    /// <summary>主地址 + 备用地址 + 换成各镜像的版本，去重后排序。</summary>
+    /// <summary>
+    /// 主地址 + 备用地址 + 换成各镜像的版本，去重后排序。
+    /// B 站分配的是海外节点（cosov、akamai 等）时，国内镜像排在前面：
+    /// 海外节点单次测速很快，但长时间播放时经常断连接，mpv 重连失败就卡住。
+    /// </summary>
     public IReadOnlyList<string> BuildCandidates(string primary, IEnumerable<string> backups)
     {
         var list = new List<string>();
@@ -38,6 +42,8 @@ public sealed class StreamPreferences
         var originals = new[] { primary }.Concat(backups).ToList();
         var replaceable = originals.FirstOrDefault(IsUpos);
         if (PreferredMirror is not null && replaceable is not null) Add(WithHost(replaceable, PreferredMirror));
+        if (PreferredMirror is null && replaceable is not null && IsOverseas(primary))
+            foreach (var m in Mirrors.Take(3)) Add(WithHost(replaceable, m));
         foreach (var u in originals) Add(u);
         if (replaceable is not null)
             foreach (var m in Mirrors) Add(WithHost(replaceable, m));
@@ -47,6 +53,15 @@ public sealed class StreamPreferences
     static bool IsUpos(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Host.StartsWith("upos-", StringComparison.OrdinalIgnoreCase)
         && u.Host.EndsWith(".bilivideo.com", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>海外节点：akamai 等非 bilivideo 域名，或 upos-xx-mirrorcosov / aliov / hwov 这类以 ov 结尾的。</summary>
+    internal static bool IsOverseas(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) return false;
+        if (!u.Host.EndsWith(".bilivideo.com", StringComparison.OrdinalIgnoreCase)) return true;
+        var name = u.Host[..u.Host.IndexOf('.')];
+        return name.StartsWith("upos-", StringComparison.OrdinalIgnoreCase) && name.EndsWith("ov", StringComparison.OrdinalIgnoreCase);
+    }
 
     static string WithHost(string url, string host) => new UriBuilder(url) { Host = host, Port = -1 }.Uri.ToString();
 

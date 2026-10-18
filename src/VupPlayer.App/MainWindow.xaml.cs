@@ -620,7 +620,7 @@ public partial class MainWindow : Window
         var line = new MenuItem { Header = "播放线路" };
         foreach (var (host, name) in new (string?, string)[]
                  {
-                     (null, "自动（B 站分配，卡住时自动换）"),
+                     (null, "自动（分到海外节点时改走国内镜像，卡住自动换）"),
                      ("upos-sz-mirrorali.bilivideo.com", "阿里云"),
                      ("upos-sz-mirror08c.bilivideo.com", "08c"),
                      ("upos-sz-mirrorhw.bilivideo.com", "华为云"),
