@@ -37,6 +37,36 @@ public sealed record ResolvedStream(
     /// <summary>线路的服务器名（用于显示和日志）。</summary>
     public string HostAt(int line) =>
         Uri.TryCreate(VideoAt(line) ?? AudioAt(line), UriKind.Absolute, out var u) ? u.Host : "";
+
+    /// <summary>第一条最近没出过问题的线路；都出过问题就从 0 开始。</summary>
+    public int FirstHealthyLine(LineHealth health, DateTimeOffset now)
+    {
+        for (var i = 0; i < LineCount; i++)
+            if (!health.IsBad(HostAt(i), now)) return i;
+        return 0;
+    }
+}
+
+/// <summary>
+/// 记录最近卡住或连不上的服务器。同一个镜像坏了往往持续一段时间，
+/// 之后的歌直接跳过它，不用每首都先在它上面等一次超时。
+/// </summary>
+public sealed class LineHealth(TimeSpan? ttl = null)
+{
+    readonly TimeSpan _ttl = ttl ?? TimeSpan.FromMinutes(10);
+    readonly Dictionary<string, DateTimeOffset> _bad = new(StringComparer.OrdinalIgnoreCase);
+    readonly Lock _lock = new();
+
+    public void MarkBad(string host, DateTimeOffset now)
+    {
+        if (string.IsNullOrEmpty(host)) return;
+        lock (_lock) _bad[host] = now;
+    }
+
+    public bool IsBad(string host, DateTimeOffset now)
+    {
+        lock (_lock) return _bad.TryGetValue(host, out var t) && now - t < _ttl;
+    }
 }
 
 public interface IStreamResolver

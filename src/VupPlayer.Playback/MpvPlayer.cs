@@ -67,7 +67,8 @@ public sealed class MpvPlayer : IDisposable
         SetOption("cache", "yes");
         SetOption("demuxer-max-bytes", "48MiB");
         SetOption("demuxer-max-back-bytes", "16MiB");
-        SetOption("network-timeout", "15");
+        // 连不上或长时间没数据就报错，交给上层换线路（原来 15 秒，实际要等 20 多秒才换）
+        SetOption("network-timeout", "8");
         SetOption("audio-client-name", "VupPlayer");
 
         var err = MpvNative.mpv_initialize(_ctx);

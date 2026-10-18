@@ -178,6 +178,25 @@ public class StreamLineTests
     }
 }
 
+public class LineHealthTests
+{
+    [Fact]
+    public void FirstHealthyLine_SkipsRecentlyBadHosts_UntilExpired()
+    {
+        var s = new VupPlayer.Core.Streams.ResolvedStream(null, "https://a.com/x", new Dictionary<string, string>(), DateTimeOffset.MaxValue, "t",
+            AudioCandidates: ["https://a.com/x", "https://b.com/x", "https://c.com/x"]);
+        var health = new VupPlayer.Core.Streams.LineHealth(TimeSpan.FromMinutes(10));
+        var t0 = DateTimeOffset.UnixEpoch;
+        Assert.Equal(0, s.FirstHealthyLine(health, t0));
+        health.MarkBad("a.com", t0);
+        health.MarkBad("b.com", t0);
+        Assert.Equal(2, s.FirstHealthyLine(health, t0.AddMinutes(1)));
+        health.MarkBad("c.com", t0);
+        Assert.Equal(0, s.FirstHealthyLine(health, t0.AddMinutes(1)));   // 都坏了就从头来
+        Assert.Equal(0, s.FirstHealthyLine(health, t0.AddMinutes(11)));
+    }
+}
+
 public class SearchParsingTests
 {
     [Theory]

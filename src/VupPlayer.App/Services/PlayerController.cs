@@ -44,6 +44,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     double _watchPos = -1;
     DateTime _watchSince = DateTime.UtcNow;
     DateTime? _bufferingSince;
+    DateTime? _mpvLoadSince;         // 交给 mpv 加载的时间，开始播放后清空
+    readonly LineHealth _health = new();
 
     DateTime _lastLoadAt;
 
@@ -91,6 +93,19 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     /// </summary>
     void Watchdog()
     {
+        // 线路连得上但一直不出数据：mpv 自己要等 network-timeout 才报错，这里提前换线路
+        if (_mpv is not null && Current is not null && IsLoading && _mpvLoadSince is { } ls
+            && DateTime.UtcNow - ls >= TimeSpan.FromSeconds(10))
+        {
+            AppLog.Write("watchdog: 加载超过 10 秒还没开始播放");
+            _mpvLoadSince = null;
+            if (!TrySwitchLine("连接太慢"))
+            {
+                StatusText = "这首一直加载不出来，跳到下一首";
+                _ = NextAsync(userInitiated: false);
+            }
+            return;
+        }
         if (_mpv is null || Current is null || !IsPlaying || IsLoading)
         {
             _watchPos = -1;
@@ -138,6 +153,7 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     bool TrySwitchLine(string why)
     {
         if (Current is not { } cur || _lineSwitches >= MaxLineSwitches) return false;
+        if (_currentStream is { } bad) _health.MarkBad(bad.HostAt(_line), DateTimeOffset.UtcNow);
         _lineSwitches++;
         var pos = _lastPos > 0 ? _lastPos + (cur.StartSec ?? 0) : (double?)null;
         var lines = _currentStream?.LineCount ?? 1;
@@ -171,11 +187,16 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         mpv.SetNormalize(Normalize);
         mpv.PositionChanged += p => OnUi(() => OnPosition(p));
         mpv.DurationChanged += d => OnUi(() => Duration = d);
-        mpv.PauseChanged += paused => OnUi(() => IsPlaying = !paused && Current is not null);
+        mpv.PauseChanged += paused => OnUi(() =>
+        {
+            IsPlaying = !paused && Current is not null;
+            AppLog.Write($"pause={paused} track={Current?.Id} pos={_lastPos:0.0}");
+        });
         mpv.BufferingChanged += b => OnUi(() => IsBuffering = b);
         mpv.FileLoaded += () => OnUi(() =>
         {
             IsLoading = false;
+            _mpvLoadSince = null;
             if (StatusText is not null && (StatusText.Contains("线路") || StatusText.Contains("重新获取"))) StatusText = null;
             _consecutiveErrors = 0;
             IsPlaying = !mpv.IsPaused;
@@ -472,12 +493,14 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         }
         if (gen != _generation) return;   // 用户已经切到别的歌了
         _currentStream = stream;
+        if (_lineSwitches == 0) _line = stream.FirstHealthyLine(_health, DateTimeOffset.UtcNow);
         var lineText = stream.LineCount > 1 && _line > 0 ? $" · 线路 {_line + 1}" : "";
         QualityText = StreamMode == StreamMode.Audio
             ? $"纯音频 · {stream.Resolver}{lineText}"
             : $"{stream.Quality ?? "视频"} · {stream.Resolver}{lineText}";
         if (_lineSwitches == 0) StatusText = null;
         _lastLoadAt = DateTime.UtcNow;
+        _mpvLoadSince = _lastLoadAt;
         AppLog.Write($"  line {_line + 1}/{stream.LineCount}: {stream.HostAt(_line)}");
         _mpv.Load(new MediaSource(
             stream.VideoAt(_line), stream.AudioAt(_line), stream.Headers,
