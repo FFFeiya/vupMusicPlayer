@@ -95,7 +95,7 @@ public sealed class RepositoryTests : IDisposable
     {
         var a = Seed("BV1", 1);
         var b = _repo.ImportVideo(new Video { Bvid = "BV2", Title = "x", UpMid = 1, UpName = "u" },
-            [new Track { Bvid = "BV2", Cid = 2, Page = 1 }], _ => (null, "星瞳official"));
+            [new Track { Bvid = "BV2", Cid = 2, Page = 1 }], _ => (null, "瞳瞳"));   // 昵称，规则认不出来
         var keep = _repo.GetTrack(a[0])!.StreamerId!.Value;
         var other = _repo.GetTrack(b[0])!.StreamerId!.Value;
         Assert.NotEqual(keep, other);
@@ -104,8 +104,17 @@ public sealed class RepositoryTests : IDisposable
         Assert.Equal("星瞳", _repo.GetTrack(b[0])!.StreamerName);
 
         // 别名命中：用别名设置主播会落到同一个人
-        _repo.UpdateTracks(b, new TrackUpdate { StreamerName = "星瞳official" });
+        _repo.UpdateTracks(b, new TrackUpdate { StreamerName = "瞳瞳" });
         Assert.Equal(keep, _repo.GetTrack(b[0])!.StreamerId);
+    }
+
+    [Fact]
+    public void Streamer_OfficialSuffixIsSamePerson()
+    {
+        var a = Seed("BV1", 1);
+        var b = _repo.ImportVideo(new Video { Bvid = "BV2", Title = "x", UpMid = 1, UpName = "u" },
+            [new Track { Bvid = "BV2", Cid = 2, Page = 1 }], _ => (null, "星瞳official"));
+        Assert.Equal(_repo.GetTrack(a[0])!.StreamerId, _repo.GetTrack(b[0])!.StreamerId);
     }
 
     [Fact]

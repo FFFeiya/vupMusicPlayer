@@ -96,11 +96,11 @@ public static partial class TitleParser
                 var name = StripGenericSuffix(part);
                 if (name != part)
                 {
-                    if (name.Length >= 2 && !IsGeneric(name)) return name;
+                    if (name.Length >= 2 && !IsGeneric(name) && !StreamerMatcher.IsNotPerson(name)) return name;
                     continue;
                 }
                 if (part.Length is < 2 or > 16) continue;
-                if (IsGeneric(part)) continue;
+                if (IsGeneric(part) || StreamerMatcher.IsNotPerson(part)) continue;
                 if (part.Any(char.IsDigit) && part.All(ch => char.IsDigit(ch) || ch is '.' or '-' or '/')) continue;   // 日期
                 return part;
             }

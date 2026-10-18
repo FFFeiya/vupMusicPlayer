@@ -121,7 +121,8 @@ public sealed class LibraryRepository(Database db)
             {
                 var (song, streamer) = guess(p);
                 p.SongTitle = song;
-                if (!string.IsNullOrWhiteSpace(streamer)) p.StreamerId = GetOrCreateStreamer(c, tx, streamer!);
+                if (!string.IsNullOrWhiteSpace(streamer) && !Metadata.StreamerMatcher.IsNotPerson(streamer!))
+                    p.StreamerId = GetOrCreateStreamer(c, tx, streamer!, fuzzy: true);
             }
             var newId = c.ExecuteScalar<long>("""
                 INSERT INTO tracks (bvid, cid, page, part_title, duration_sec, song_title, streamer_id)
@@ -305,23 +306,135 @@ public sealed class LibraryRepository(Database db)
 
     // ---------------- 主播与标签 ----------------
 
-    static long GetOrCreateStreamer(SqliteConnection c, SqliteTransaction? tx, string name)
+    static readonly System.Text.Json.JsonSerializerOptions AliasJson = new()
     {
-        var id = c.ExecuteScalar<long?>("SELECT id FROM streamers WHERE name = @name COLLATE NOCASE", new { name }, tx);
-        if (id is long existing) return existing;
-        // 别名命中
-        foreach (var s in c.Query<Streamer>("SELECT * FROM streamers WHERE aliases IS NOT NULL", transaction: tx))
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    static string[] ParseAliases(string? json) =>
+        string.IsNullOrEmpty(json) ? [] : System.Text.Json.JsonSerializer.Deserialize<string[]>(json) ?? [];
+
+    static IReadOnlyList<Metadata.KnownStreamer> LoadKnownStreamers(SqliteConnection c, SqliteTransaction? tx) =>
+        c.Query<(long id, string name, string? aliases, long count)>("""
+            SELECT s.id, s.name, s.aliases, (SELECT COUNT(*) FROM tracks t WHERE t.streamer_id = s.id) FROM streamers s
+            """, transaction: tx)
+         .Select(r => new Metadata.KnownStreamer(r.id, r.name, ParseAliases(r.aliases), (int)r.count)).ToList();
+
+    /// <summary>
+    /// 找到或新建主播。先精确匹配名字和别名，再按规范化后的名字匹配；
+    /// fuzzy = true（自动导入时）还会把「只差一个字」的错写归到已有主播，并把错写记成别名。
+    /// </summary>
+    static long GetOrCreateStreamer(SqliteConnection c, SqliteTransaction? tx, string name, bool fuzzy = false)
+    {
+        var known = LoadKnownStreamers(c, tx);
+        if (Metadata.StreamerMatcher.Match(name, known, fuzzy) is { } m)
         {
-            var aliases = System.Text.Json.JsonSerializer.Deserialize<string[]>(s.Aliases!) ?? [];
-            if (aliases.Any(a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase))) return s.Id;
+            if (m.Kind is Metadata.StreamerMatchKind.Fuzzy or Metadata.StreamerMatchKind.Normalized)
+                AddAlias(c, tx, m.StreamerId, name);
+            return m.StreamerId;
         }
         return c.ExecuteScalar<long>("INSERT INTO streamers (name) VALUES (@name); SELECT last_insert_rowid();", new { name }, tx);
+    }
+
+    static void AddAlias(SqliteConnection c, SqliteTransaction? tx, long streamerId, string alias)
+    {
+        var s = c.QueryFirstOrDefault<Streamer>("SELECT * FROM streamers WHERE id = @streamerId", new { streamerId }, tx);
+        if (s is null || string.Equals(s.Name, alias, StringComparison.OrdinalIgnoreCase)) return;
+        var list = ParseAliases(s.Aliases).ToList();
+        if (list.Any(a => string.Equals(a, alias, StringComparison.OrdinalIgnoreCase))) return;
+        list.Add(alias.Trim());
+        c.Execute("UPDATE streamers SET aliases = @json WHERE id = @streamerId",
+            new { json = System.Text.Json.JsonSerializer.Serialize(list, AliasJson), streamerId }, tx);
     }
 
     public long GetOrCreateStreamer(string name)
     {
         using var c = Db.Open();
         return GetOrCreateStreamer(c, null, name.Trim());
+    }
+
+    public IReadOnlyList<Metadata.KnownStreamer> GetKnownStreamers()
+    {
+        using var c = Db.Open();
+        return LoadKnownStreamers(c, null);
+    }
+
+    /// <summary>
+    /// 每个切片 man 的「主力主播」：至少 minTracks 首已标注主播，且其中 ratio 以上是同一个主播。
+    /// 返回 up_mid → 主播 id。
+    /// </summary>
+    public IReadOnlyDictionary<long, long> GetUploaderDominantStreamers(int minTracks = 10, double ratio = 0.9)
+    {
+        using var c = Db.Open();
+        var rows = c.Query<(long upMid, long streamerId, long n)>("""
+            SELECT v.up_mid, t.streamer_id, COUNT(*) FROM tracks t JOIN videos v ON v.bvid = t.bvid
+            WHERE t.streamer_id IS NOT NULL GROUP BY v.up_mid, t.streamer_id
+            """);
+        var result = new Dictionary<long, long>();
+        foreach (var g in rows.GroupBy(r => r.upMid))
+        {
+            var total = g.Sum(r => r.n);
+            var top = g.MaxBy(r => r.n);
+            if (total >= minTracks && top.n >= total * ratio) result[g.Key] = top.streamerId;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 没有主播的曲目，如果它的切片 man 有明确的主力主播，就归给这个主播。apply = false 时只预览。
+    /// </summary>
+    public IReadOnlyList<(long TrackId, string Title, string Streamer)> FillStreamerByUploader(bool apply, int minTracks = 10, double ratio = 0.9)
+    {
+        var dominant = GetUploaderDominantStreamers(minTracks, ratio);
+        if (dominant.Count == 0) return [];
+        using var c = Db.Open();
+        var names = c.Query<(long id, string name)>("SELECT id, name FROM streamers").ToDictionary(r => r.id, r => r.name);
+        var rows = c.Query<(long id, string title, long upMid)>("""
+            SELECT t.id, COALESCE(t.song_title, v.title), v.up_mid FROM tracks t JOIN videos v ON v.bvid = t.bvid
+            WHERE t.streamer_id IS NULL
+            """).Where(r => dominant.ContainsKey(r.upMid)).ToList();
+        if (apply)
+        {
+            using var tx = c.BeginTransaction();
+            foreach (var r in rows)
+                c.Execute("UPDATE tracks SET streamer_id = @sid WHERE id = @id", new { sid = dominant[r.upMid], r.id }, tx);
+            tx.Commit();
+        }
+        return rows.Select(r => (r.id, r.title, names[dominant[r.upMid]])).ToList();
+    }
+
+    public void SetStreamerMid(long streamerId, long? mid)
+    {
+        using var c = Db.Open();
+        c.Execute("UPDATE streamers SET mid = @mid WHERE id = @streamerId", new { mid, streamerId });
+    }
+
+    /// <summary>改名。新名字已被别的主播占用时，合并过去。返回最终的主播 id。</summary>
+    public long RenameStreamer(long streamerId, string newName)
+    {
+        newName = newName.Trim();
+        long? other;
+        using (var c = Db.Open())
+            other = c.ExecuteScalar<long?>("SELECT id FROM streamers WHERE name = @newName COLLATE NOCASE AND id <> @streamerId", new { newName, streamerId });
+        if (other is long o)
+        {
+            MergeStreamers(o, [streamerId]);
+            return o;
+        }
+        using var c2 = Db.Open();
+        var old = c2.ExecuteScalar<string>("SELECT name FROM streamers WHERE id = @streamerId", new { streamerId });
+        c2.Execute("UPDATE streamers SET name = @newName WHERE id = @streamerId", new { newName, streamerId });
+        if (old is not null && !string.Equals(old, newName, StringComparison.OrdinalIgnoreCase)) AddAlias(c2, null, streamerId, old);
+        return streamerId;
+    }
+
+    /// <summary>删除主播（例如把活动名误识别成了主播），它的曲目变成「无主播」。</summary>
+    public int DeleteStreamer(long streamerId)
+    {
+        using var c = Db.Open();
+        var n = c.Execute("UPDATE tracks SET streamer_id = NULL WHERE streamer_id = @streamerId", new { streamerId });
+        c.Execute("DELETE FROM streamers WHERE id = @streamerId", new { streamerId });
+        return n;
     }
 
     static long GetOrCreateTag(SqliteConnection c, SqliteTransaction? tx, string name)
@@ -383,7 +496,7 @@ public sealed class LibraryRepository(Database db)
             moved += c.Execute("UPDATE tracks SET streamer_id = @intoId WHERE streamer_id = @from", new { intoId, from }, tx);
             c.Execute("DELETE FROM streamers WHERE id = @from", new { from }, tx);
         }
-        var json = System.Text.Json.JsonSerializer.Serialize(aliases.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+        var json = System.Text.Json.JsonSerializer.Serialize(aliases.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), AliasJson);
         c.Execute("UPDATE streamers SET aliases = @json WHERE id = @intoId", new { json, intoId }, tx);
         tx.Commit();
         return moved;
@@ -392,7 +505,7 @@ public sealed class LibraryRepository(Database db)
     public void SetStreamerAliases(long id, IEnumerable<string> aliases)
     {
         using var c = Db.Open();
-        var json = System.Text.Json.JsonSerializer.Serialize(aliases.Where(a => !string.IsNullOrWhiteSpace(a)).Select(a => a.Trim()).Distinct().ToArray());
+        var json = System.Text.Json.JsonSerializer.Serialize(aliases.Where(a => !string.IsNullOrWhiteSpace(a)).Select(a => a.Trim()).Distinct().ToArray(), AliasJson);
         c.Execute("UPDATE streamers SET aliases = @json WHERE id = @id", new { json, id });
     }
 

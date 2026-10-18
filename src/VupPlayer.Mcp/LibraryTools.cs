@@ -150,7 +150,11 @@ public sealed class LibraryTools(LibraryRepository repo)
     public string ListFacets() => Out(new
     {
         total_tracks = repo.CountTracks(new TrackQuery()),
-        streamers = repo.ListStreamers().Select(s => new { s.Id, s.Name, tracks = s.Count, aliases = repo.GetStreamers().FirstOrDefault(x => x.Id == s.Id)?.Aliases }),
+        streamers = repo.ListStreamers().Select(s =>
+        {
+            var full = repo.GetStreamers().FirstOrDefault(x => x.Id == s.Id);
+            return new { s.Id, s.Name, tracks = s.Count, aliases = full?.Aliases, mid = full?.Mid };
+        }),
         uploaders = repo.ListUploaders().Select(u => new { mid = u.Id, u.Name, tracks = u.Count }),
         tags = repo.ListTags().Select(t => new { t.Name, tracks = t.Count }),
         playlists = repo.ListPlaylists().Select(p => new { p.Id, p.Name, tracks = p.ItemCount }),

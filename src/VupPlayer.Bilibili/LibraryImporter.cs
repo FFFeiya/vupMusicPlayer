@@ -202,6 +202,8 @@ public sealed class LibraryImporter(BiliApi api, YtDlp ytdlp, LibraryRepository 
         var created = repo.ImportVideo(video, pages, t =>
         {
             var (song, streamer) = TitleParser.Guess(v.Title, t.PartTitle, pages.Count, known);
+            // 标题里猜不出主播：这个切片 man 基本只切一个主播的话，就归给这个主播
+            if (streamer is null && UploaderPrior().TryGetValue(v.OwnerMid, out var dominant)) streamer = dominant;
             if (streamer is not null && !known.Contains(streamer, StringComparer.OrdinalIgnoreCase)) known.Add(streamer);
             return (song, streamer);
         });
@@ -209,6 +211,20 @@ public sealed class LibraryImporter(BiliApi api, YtDlp ytdlp, LibraryRepository 
         if (!result.Bvids.Contains(v.Bvid)) result.Bvids.Add(v.Bvid);
         result.TracksAdded += created.Count;
         result.NewTrackIds.AddRange(created);
+    }
+
+    Dictionary<long, string>? _uploaderPrior;
+    DateTime _uploaderPriorAt;
+
+    /// <summary>切片 man → 主力主播名（缓存 1 分钟，导入过程中会不断变化）。</summary>
+    Dictionary<long, string> UploaderPrior()
+    {
+        if (_uploaderPrior is not null && DateTime.UtcNow - _uploaderPriorAt < TimeSpan.FromMinutes(1)) return _uploaderPrior;
+        var names = repo.GetStreamers().ToDictionary(s => s.Id, s => s.Name);
+        _uploaderPrior = repo.GetUploaderDominantStreamers()
+            .Where(kv => names.ContainsKey(kv.Value)).ToDictionary(kv => kv.Key, kv => names[kv.Value]);
+        _uploaderPriorAt = DateTime.UtcNow;
+        return _uploaderPrior;
     }
 
     List<string> LoadKnownStreamers()

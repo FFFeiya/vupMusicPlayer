@@ -33,6 +33,9 @@ public sealed record SearchItem(string Bvid, string Title, string Uploader, long
 
 public sealed record SearchPage(int Total, int Page, IReadOnlyList<SearchItem> Items);
 
+/// <summary>B 站用户搜索结果。</summary>
+public sealed record UserSearchItem(long Mid, string Name, long Fans, int Videos, string? Sign, string? Verify, bool HasLiveRoom);
+
 public sealed record DashStream(int Id, string Url, IReadOnlyList<string> BackupUrls, long Bandwidth, string Codecs, int Width, int Height, int CodecId);
 
 public sealed record PlayUrlInfo(IReadOnlyList<DashStream> Videos, IReadOnlyList<DashStream> Audios, string? MuxedUrl, string? QualityDesc);
@@ -349,6 +352,27 @@ public sealed class BiliApi : IDisposable
                 r["description"]?.GetValue<string>()));
         }
         return new SearchPage(d?["numResults"]?.GetValue<int>() ?? items.Count, page, items);
+    }
+
+    /// <summary>搜索 B 站用户（用来把主播名对应到唯一的 UID）。</summary>
+    public async Task<IReadOnlyList<UserSearchItem>> SearchUsersAsync(string keyword, CancellationToken ct = default)
+    {
+        var node = await GetWbiAsync("https://api.bilibili.com/x/web-interface/wbi/search/type",
+            [P("search_type", "bili_user"), P("keyword", keyword), P("page", 1)], ct).ConfigureAwait(false);
+        var list = new List<UserSearchItem>();
+        foreach (var r in node["data"]?["result"]?.AsArray() ?? [])
+        {
+            if (r is null) continue;
+            list.Add(new UserSearchItem(
+                ReadLong(r["mid"]),
+                CleanHtml(r["uname"]?.GetValue<string>() ?? ""),
+                ReadLong(r["fans"]),
+                (int)ReadLong(r["videos"]),
+                r["usign"]?.GetValue<string>(),
+                r["official_verify"]?["desc"]?.GetValue<string>() is { Length: > 0 } desc ? desc : null,
+                ReadLong(r["room_id"]) > 0));
+        }
+        return list;
     }
 
     /// <summary>搜索结果的标题带 &lt;em class="keyword"&gt; 高亮和 HTML 实体，去掉。</summary>
