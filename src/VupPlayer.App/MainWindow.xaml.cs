@@ -616,6 +616,23 @@ public partial class MainWindow : Window
             quality.Items.Add(mi);
         }
         menu.Items.Add(quality);
+
+        var line = new MenuItem { Header = "播放线路" };
+        foreach (var (host, name) in new (string?, string)[]
+                 {
+                     (null, "自动（B 站分配，卡住时自动换）"),
+                     ("upos-sz-mirrorali.bilivideo.com", "阿里云"),
+                     ("upos-sz-mirror08c.bilivideo.com", "08c"),
+                     ("upos-sz-mirrorhw.bilivideo.com", "华为云"),
+                     ("upos-sz-mirrorcos.bilivideo.com", "腾讯云"),
+                     ("upos-sz-mirrorbd.bilivideo.com", "百度云"),
+                 })
+        {
+            var mi = new MenuItem { Header = name, IsCheckable = true, IsChecked = _settings.PreferredMirror == host };
+            mi.Click += (_, _) => { _settings.PreferredMirror = host; _app.StreamPrefs.PreferredMirror = host; _app.Resolver.ClearAll(); };
+            line.Items.Add(mi);
+        }
+        menu.Items.Add(line);
         menu.Items.Add(BuildRecommendMenu());
 
         var ytdlp = new MenuItem { Header = "优先用 yt-dlp 取流（较慢，接口失效时使用）", IsCheckable = true, IsChecked = _settings.PreferYtDlp };

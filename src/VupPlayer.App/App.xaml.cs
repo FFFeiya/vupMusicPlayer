@@ -72,6 +72,7 @@ public partial class App : Application
 
         Settings = AppSettings.Load();
         StreamPrefs.MaxHeight = Settings.MaxHeight;
+        StreamPrefs.PreferredMirror = Settings.PreferredMirror;
 
         var db = new Database();
         db.Migrate();

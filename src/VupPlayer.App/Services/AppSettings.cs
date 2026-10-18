@@ -16,6 +16,8 @@ public sealed class AppSettings
     public int MaxHeight { get; set; } = 1080;
     public bool CloseToTray { get; set; } = true;
     public bool PreferYtDlp { get; set; }
+    /// <summary>优先使用的 CDN 镜像；为空 = B 站分配的地址，卡住时自动换。</summary>
+    public string? PreferredMirror { get; set; }
     public long? LastTrackId { get; set; }
     // ---- 推荐 ----
     /// <summary>推荐器：weighted-v1 / random。</summary>

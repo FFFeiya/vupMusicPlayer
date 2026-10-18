@@ -10,14 +10,34 @@ public enum StreamMode
 
 public sealed record TrackRef(string Bvid, long Cid, int Page);
 
-/// <summary>解析出的可播放直链。</summary>
+/// <summary>
+/// 解析出的可播放直链。VideoCandidates / AudioCandidates 是同一个流的多条线路（不同 CDN 镜像），
+/// 第一条就是 VideoUrl / AudioUrl；某条线路卡住时换下一条。
+/// </summary>
 public sealed record ResolvedStream(
     string? VideoUrl,
     string AudioUrl,
     IReadOnlyDictionary<string, string> Headers,
     DateTimeOffset ExpiresAt,
     string Resolver,
-    string? Quality = null);
+    string? Quality = null,
+    IReadOnlyList<string>? VideoCandidates = null,
+    IReadOnlyList<string>? AudioCandidates = null)
+{
+    /// <summary>可用线路数。</summary>
+    public int LineCount => Math.Max(VideoCandidates?.Count ?? 1, AudioCandidates?.Count ?? 1);
+
+    /// <summary>第 line 条线路的视频地址（超出范围时循环）。</summary>
+    public string? VideoAt(int line) =>
+        VideoUrl is null ? null : VideoCandidates is { Count: > 0 } v ? v[line % v.Count] : VideoUrl;
+
+    public string AudioAt(int line) =>
+        AudioCandidates is { Count: > 0 } a ? a[line % a.Count] : AudioUrl;
+
+    /// <summary>线路的服务器名（用于显示和日志）。</summary>
+    public string HostAt(int line) =>
+        Uri.TryCreate(VideoAt(line) ?? AudioAt(line), UriKind.Absolute, out var u) ? u.Host : "";
+}
 
 public interface IStreamResolver
 {

@@ -127,6 +127,42 @@ public class LinkParserTests
         Assert.Equal(3, LinkParser.SplitInputs("BV1NsnM6DEz5\nBV1WwJy6EEMg，BV1XJJ96oEXg").Count);
 }
 
+public class StreamLineTests
+{
+    [Fact]
+    public void BuildCandidates_PrimaryFirst_ThenBackups_ThenMirrors()
+    {
+        var prefs = new StreamPreferences();
+        var lines = prefs.BuildCandidates(
+            "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/a.m4s?deadline=1&os=cosovbv",
+            ["https://upos-hz-mirrorakam.akamaized.net/upgcxcode/a.m4s?hdnts=x"]);
+        Assert.StartsWith("https://upos-sz-mirrorcosov.bilivideo.com/", lines[0]);
+        Assert.StartsWith("https://upos-hz-mirrorakam.akamaized.net/", lines[1]);
+        Assert.Contains(lines, l => l.StartsWith("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/a.m4s?deadline=1&os=cosovbv"));
+        Assert.Equal(lines.Count, lines.Distinct().Count());
+        // akamai 地址的签名不同，不能拿来换服务器名
+        Assert.DoesNotContain(lines, l => l.Contains("akamaized") && l.Contains("deadline"));
+    }
+
+    [Fact]
+    public void BuildCandidates_PreferredMirrorFirst()
+    {
+        var prefs = new StreamPreferences { PreferredMirror = "upos-sz-mirrorhw.bilivideo.com" };
+        var lines = prefs.BuildCandidates("https://upos-sz-mirrorcosov.bilivideo.com/x.m4s?a=1", []);
+        Assert.StartsWith("https://upos-sz-mirrorhw.bilivideo.com/", lines[0]);
+    }
+
+    [Fact]
+    public void ResolvedStream_LinesCycle()
+    {
+        var s = new VupPlayer.Core.Streams.ResolvedStream("v0", "a0", new Dictionary<string, string>(), DateTimeOffset.MaxValue, "t",
+            VideoCandidates: ["v0", "v1"], AudioCandidates: ["a0", "a1", "a2"]);
+        Assert.Equal(3, s.LineCount);
+        Assert.Equal("v0", s.VideoAt(2));
+        Assert.Equal("a2", s.AudioAt(2));
+    }
+}
+
 public class SearchParsingTests
 {
     [Theory]

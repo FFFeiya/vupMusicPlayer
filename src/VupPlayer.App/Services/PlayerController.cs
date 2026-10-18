@@ -29,7 +29,9 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     IReadOnlyDictionary<long, string>? _queueReasons;
     bool _prefetched;
     int _consecutiveErrors;
-    bool _retriedCurrent;
+    int _line;                       // 当前用第几条线路（CDN 镜像）
+    int _lineSwitches;               // 这首已经换了几次线路
+    ResolvedStream? _currentStream;
     DateTime _lastUiPosition;
 
     // 播放记录
@@ -41,7 +43,7 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     readonly DispatcherTimer _watchdog;
     double _watchPos = -1;
     DateTime _watchSince = DateTime.UtcNow;
-    bool _watchRecovered;
+
     DateTime _lastLoadAt;
 
     public PlayQueue Queue { get; } = new();
@@ -108,13 +110,41 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         {
             _ = NextAsync(userInitiated: false);
         }
-        else if (!_watchRecovered)
+        else if (!TrySwitchLine("进度卡住"))
         {
-            _watchRecovered = true;
-            var cur = Current;
-            _resolver.Invalidate(new TrackRef(cur.Bvid, cur.Cid, cur.Page));
-            _ = LoadCurrentAsync(cur, _lastPos + (cur.StartSec ?? 0), false, ++_generation);
+            StatusText = "这首一直加载不出来，跳到下一首";
+            _ = NextAsync(userInitiated: false);
         }
+    }
+
+    /// <summary>每首最多换几次线路（包括最后一次重新获取地址）。</summary>
+    const int MaxLineSwitches = 5;
+
+    /// <summary>
+    /// 当前线路卡住或出错：换下一条线路（另一个 CDN 镜像），从原位置继续。
+    /// 线路都试过一轮后，重新获取一次播放地址（可能是直链过期）。还不行就返回 false。
+    /// </summary>
+    bool TrySwitchLine(string why)
+    {
+        if (Current is not { } cur || _lineSwitches >= MaxLineSwitches) return false;
+        _lineSwitches++;
+        var pos = _lastPos > 0 ? _lastPos + (cur.StartSec ?? 0) : (double?)null;
+        var lines = _currentStream?.LineCount ?? 1;
+        if (_line + 1 < lines && _lineSwitches < MaxLineSwitches)
+        {
+            _line++;
+            AppLog.Write($"{why}：换到线路 {_line + 1}/{lines} {_currentStream?.HostAt(_line)}");
+            StatusText = $"{why}，换一条线路（{_line + 1}/{lines}）…";
+        }
+        else
+        {
+            _line = 0;
+            _resolver.Invalidate(new TrackRef(cur.Bvid, cur.Cid, cur.Page));
+            AppLog.Write($"{why}：线路都试过了，重新获取播放地址");
+            StatusText = $"{why}，重新获取播放地址…";
+        }
+        _ = LoadCurrentAsync(cur, pos, false, ++_generation);
+        return true;
     }
 
     public bool IsAttached => _mpv is not null;
@@ -135,6 +165,7 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         mpv.FileLoaded += () => OnUi(() =>
         {
             IsLoading = false;
+            if (StatusText is not null && (StatusText.Contains("线路") || StatusText.Contains("重新获取"))) StatusText = null;
             _consecutiveErrors = 0;
             IsPlaying = !mpv.IsPaused;
         });
@@ -398,8 +429,9 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         _settings.LastTrackId = trackId;
         _prefetched = false;
         _pendingPick = null;
-        _retriedCurrent = false;
-        _watchRecovered = false;
+        _line = 0;
+        _lineSwitches = 0;
+        _currentStream = null;
         Position = 0;
         Duration = track.DurationSec ?? 0;
         _eventStartedAt = Clock.Now();
@@ -412,7 +444,7 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     {
         if (_mpv is null) { StatusText = "播放器尚未初始化"; return; }
         IsLoading = true;
-        StatusText = "正在获取播放地址…";
+        if (_lineSwitches == 0) StatusText = "正在获取播放地址…";   // 换线路时保留「正在换线路」的提示
         ResolvedStream stream;
         var sw = System.Diagnostics.Stopwatch.StartNew();
         try
@@ -428,13 +460,16 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
             return;
         }
         if (gen != _generation) return;   // 用户已经切到别的歌了
+        _currentStream = stream;
+        var lineText = stream.LineCount > 1 && _line > 0 ? $" · 线路 {_line + 1}" : "";
         QualityText = StreamMode == StreamMode.Audio
-            ? $"纯音频 · {stream.Resolver}"
-            : $"{stream.Quality ?? "视频"} · {stream.Resolver}";
-        StatusText = null;
+            ? $"纯音频 · {stream.Resolver}{lineText}"
+            : $"{stream.Quality ?? "视频"} · {stream.Resolver}{lineText}";
+        if (_lineSwitches == 0) StatusText = null;
         _lastLoadAt = DateTime.UtcNow;
+        AppLog.Write($"  line {_line + 1}/{stream.LineCount}: {stream.HostAt(_line)}");
         _mpv.Load(new MediaSource(
-            stream.VideoUrl, stream.AudioUrl, stream.Headers,
+            stream.VideoAt(_line), stream.AudioAt(_line), stream.Headers,
             Start: absolutePos ?? track.StartSec,
             End: track.EndSec,
             AudioOnly: StreamMode == StreamMode.Audio,
@@ -517,16 +552,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
                 break;
             case MpvEndReason.Error:
                 IsLoading = false;
-                if (Current is { } cur && !_retriedCurrent)
-                {
-                    // 多半是直链过期：强制重新解析，从原位置继续
-                    _retriedCurrent = true;
-                    _resolver.Invalidate(new TrackRef(cur.Bvid, cur.Cid, cur.Page));
-                    StatusText = "播放地址失效，正在重试…";
-                    var pos = _lastPos > 0 ? _lastPos + (cur.StartSec ?? 0) : (double?)null;
-                    _ = LoadCurrentAsync(cur, pos, false, ++_generation);
-                    return;
-                }
+                // 线路连不上或直链过期：换线路 / 重新获取地址，从原位置继续
+                if (TrySwitchLine("播放出错")) return;
                 OnPlaybackError("播放失败：" + error);
                 break;
         }

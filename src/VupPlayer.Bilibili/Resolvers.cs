@@ -11,6 +11,45 @@ public sealed class StreamPreferences
     /// <summary>编码优先顺序：7 = AVC，12 = HEVC，13 = AV1。AVC 兼容性最好。</summary>
     public int[] CodecPreference { get; set; } = [7, 12, 13];
 
+    /// <summary>
+    /// 优先使用的镜像（例如 upos-sz-mirrorali.bilivideo.com）。为空表示用 B 站分配的地址，卡住时再自动换。
+    /// </summary>
+    public string? PreferredMirror { get; set; }
+
+    /// <summary>
+    /// 可以互换的国内镜像。B 站 upos 地址的签名和服务器无关，换服务器名就能用；
+    /// akamaized 等海外地址的签名格式不同，不能替换。
+    /// </summary>
+    public static readonly string[] Mirrors =
+    [
+        "upos-sz-mirrorali.bilivideo.com",
+        "upos-sz-mirror08c.bilivideo.com",
+        "upos-sz-mirrorhw.bilivideo.com",
+        "upos-sz-mirrorcos.bilivideo.com",
+        "upos-sz-mirrorbd.bilivideo.com",
+    ];
+
+    /// <summary>主地址 + 备用地址 + 换成各镜像的版本，去重后排序。</summary>
+    public IReadOnlyList<string> BuildCandidates(string primary, IEnumerable<string> backups)
+    {
+        var list = new List<string>();
+        void Add(string u) { if (!list.Contains(u)) list.Add(u); }
+
+        var originals = new[] { primary }.Concat(backups).ToList();
+        var replaceable = originals.FirstOrDefault(IsUpos);
+        if (PreferredMirror is not null && replaceable is not null) Add(WithHost(replaceable, PreferredMirror));
+        foreach (var u in originals) Add(u);
+        if (replaceable is not null)
+            foreach (var m in Mirrors) Add(WithHost(replaceable, m));
+        return list;
+    }
+
+    static bool IsUpos(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Host.StartsWith("upos-", StringComparison.OrdinalIgnoreCase)
+        && u.Host.EndsWith(".bilivideo.com", StringComparison.OrdinalIgnoreCase);
+
+    static string WithHost(string url, string host) => new UriBuilder(url) { Host = host, Port = -1 }.Uri.ToString();
+
     internal static readonly IReadOnlyDictionary<string, string> Headers = new Dictionary<string, string>
     {
         ["Referer"] = BiliApi.Referer,
@@ -34,7 +73,9 @@ public sealed class BiliApiResolver(BiliApi api, StreamPreferences prefs) : IStr
                     ?? throw new StreamResolveException("没有音频流");
         var video = PickVideo(info.Videos, prefs);
         var q = video is null ? null : $"{video.Height}p {CodecName(video.CodecId)}";
-        return new ResolvedStream(video?.Url, audio.Url, StreamPreferences.Headers, expires, Name, q);
+        var audioLines = prefs.BuildCandidates(audio.Url, audio.BackupUrls);
+        var videoLines = video is null ? null : prefs.BuildCandidates(video.Url, video.BackupUrls);
+        return new ResolvedStream(videoLines?[0], audioLines[0], StreamPreferences.Headers, expires, Name, q, videoLines, audioLines);
     }
 
     internal static DashStream? PickVideo(IReadOnlyList<DashStream> videos, StreamPreferences prefs)

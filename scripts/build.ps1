@@ -1,20 +1,20 @@
 # 发布到 dist\VupPlayer：主程序 + MCP 服务 + libmpv + yt-dlp
 # 用法：pwsh scripts/build.ps1
 # 需要本机安装 .NET 9 桌面运行时（框架依赖发布，体积小）。
+#
+# 播放器正在从 dist\VupPlayer 运行时，不会覆盖它，而是发布到 dist\VupPlayer.next，
+# 然后运行 scripts/apply-update.ps1：等你退出播放器后自动换上新版并重新打开。
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$out  = Join-Path $root 'dist\VupPlayer'
+$live = Join-Path $root 'dist\VupPlayer'
 
 if (-not (Test-Path (Join-Path $root 'tools\libmpv-2.dll')) -or -not (Test-Path (Join-Path $root 'tools\yt-dlp.exe'))) {
     & (Join-Path $PSScriptRoot 'fetch-deps.ps1')
 }
 
-# 播放器正在从发布目录运行时不能覆盖
 $running = Get-Process -Name VupPlayer, VupPlayer.Mcp -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -and $_.Path.StartsWith($out, [StringComparison]::OrdinalIgnoreCase) }
-if ($running) {
-    throw "播放器（或 MCP 服务）正在从 $out 运行，请先退出播放器（托盘右键 → 退出）再打包。"
-}
+    Where-Object { $_.Path -and $_.Path.StartsWith($live, [StringComparison]::OrdinalIgnoreCase) }
+$out = if ($running) { Join-Path $root 'dist\VupPlayer.next' } else { $live }
 
 if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 
@@ -25,5 +25,10 @@ if ($LASTEXITCODE -ne 0) { throw 'MCP 服务发布失败' }
 
 $size = (Get-ChildItem $out -Recurse | Measure-Object Length -Sum).Sum / 1MB
 Write-Host ("发布完成：{0}（{1:N1} MB）" -f $out, $size)
-Write-Host "注册到 Claude Code："
-Write-Host ("  claude mcp add vupplayer --scope user -- `"{0}`"" -f (Join-Path $out 'VupPlayer.Mcp.exe'))
+if ($running) {
+    Write-Host "播放器正在运行，新版先放在 $out。"
+    Write-Host "运行 pwsh scripts/apply-update.ps1，退出播放器后会自动换上新版并重新打开。"
+} else {
+    Write-Host "注册到 Claude Code："
+    Write-Host ("  claude mcp add vupplayer --scope user -- `"{0}`"" -f (Join-Path $out 'VupPlayer.Mcp.exe'))
+}
