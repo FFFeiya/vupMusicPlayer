@@ -282,6 +282,15 @@ public sealed class PlayerTools
         return SendAsync("control", a);
     }
 
+    [McpServerTool(Name = "mini_mode")]
+    [Description("进入或退出迷你模式（置顶小窗，只有封面和播放控制）。不传 on 就切换。")]
+    public Task<string> MiniMode([Description("true 进入，false 回到主界面")] bool? on = null)
+    {
+        var a = new JsonObject();
+        if (on is bool b) a["on"] = b;
+        return SendAsync("mini_mode", a);
+    }
+
     [McpServerTool(Name = "import_from_bilibili")]
     [Description("让播放器导入 B 站内容：BV 号、视频链接、收藏夹、合集或 UP 主空间链接。使用播放器里的登录状态。")]
     public Task<string> ImportFromBilibili(string input) =>

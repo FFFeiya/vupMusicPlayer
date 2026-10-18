@@ -102,6 +102,7 @@ public partial class MainWindow : Window
     async void Prev_Click(object sender, RoutedEventArgs e) => await Player.PreviousAsync();
     async void Stream_Click(object sender, RoutedEventArgs e) => await Player.ToggleStreamModeAsync();
     void Mode_Click(object sender, RoutedEventArgs e) => Player.CyclePlayMode();
+    void Mini_Click(object sender, RoutedEventArgs e) => _app.EnterMiniMode();
 
     void Progress_MouseDown(object sender, MouseButtonEventArgs e) => _dragging = true;
 
@@ -117,8 +118,14 @@ public partial class MainWindow : Window
 
     async void OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (Keyboard.FocusedElement is TextBox) return;
         var ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+        if (ctrl && e.Key == Key.M)
+        {
+            _app.EnterMiniMode();
+            e.Handled = true;
+            return;
+        }
+        if (Keyboard.FocusedElement is TextBox) return;
         switch (e.Key)
         {
             case Key.Space:

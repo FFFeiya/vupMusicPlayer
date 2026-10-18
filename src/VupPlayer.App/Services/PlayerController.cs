@@ -246,8 +246,9 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         _settings.StreamMode = mode;
         if (Current is { } cur && _mpv is not null)
         {
-            var pos = _mpv.Position;
-            var paused = _mpv.IsPaused;
+            // 不能用 mpv 的 Position：刚切歌、新文件还没加载完时，它还是上一首的位置
+            double? pos = IsLoading ? null : _lastPos + (cur.StartSec ?? 0);
+            var paused = !IsLoading && _mpv.IsPaused;
             await LoadCurrentAsync(cur, pos, paused, ++_generation);
         }
     }
@@ -325,6 +326,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
 
     void OnPosition(double absolute)
     {
+        // 加载新文件期间收到的进度属于上一个文件
+        if (IsLoading) return;
         var rel = absolute - (Current?.StartSec ?? 0);
         var delta = rel - _lastPos;
         if (delta is > 0 and < 2) _playedSec += delta;

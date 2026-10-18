@@ -17,6 +17,10 @@ public sealed class AppSettings
     public bool CloseToTray { get; set; } = true;
     public bool PreferYtDlp { get; set; }
     public long? LastTrackId { get; set; }
+    /// <summary>上次退出时是否处于迷你模式（下次启动直接进入）。</summary>
+    public bool MiniMode { get; set; }
+    public double? MiniLeft { get; set; }
+    public double? MiniTop { get; set; }
     public double WindowWidth { get; set; } = 1280;
     public double WindowHeight { get; set; } = 780;
 

@@ -36,6 +36,12 @@ public partial class App : Application
     public PlayerController Player { get; private set; } = null!;
     public MainViewModel ViewModel { get; private set; } = null!;
     public MainWindow Shell { get; private set; } = null!;
+    public MiniWindow Mini { get; private set; } = null!;
+    public bool IsMiniMode { get; private set; }
+    public bool IsQuitting { get; private set; }
+
+    /// <summary>进入迷你模式前是画面模式：迷你窗口不显示画面，先切纯音频，退出时恢复。</summary>
+    bool _restoreVideoAfterMini;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -89,6 +95,11 @@ public partial class App : Application
             _trayTipShown = true;
         }
         Shell.Show();
+        Mini = new MiniWindow(ViewModel, Settings, this);
+
+        // 上次停在迷你模式：主窗口必须先显示一次（mpv 依附在它的子窗口上），再切过去
+        if (Settings.MiniMode)
+            Dispatcher.BeginInvoke(() => EnterMiniMode(), DispatcherPriority.ApplicationIdle);
 
         SetupTray();
         try { _media = new MediaControls(Player, Dispatcher); }
@@ -139,6 +150,76 @@ public partial class App : Application
         return File.Exists(dev) ? dev : local;
     }
 
+    // ---------------- 迷你模式 ----------------
+
+    public async void EnterMiniMode()
+    {
+        if (IsMiniMode) { ShowMini(); return; }
+        IsMiniMode = true;
+        Settings.MiniMode = true;
+        if (Shell.WindowState == WindowState.Normal)
+        {
+            Settings.WindowWidth = Shell.Width;
+            Settings.WindowHeight = Shell.Height;
+        }
+        Shell.Hide();
+        ShowMini();
+        if (Player.StreamMode == StreamMode.Video)
+        {
+            _restoreVideoAfterMini = true;
+            await Player.SetStreamModeAsync(StreamMode.Audio);
+        }
+    }
+
+    public async void ExitMiniMode()
+    {
+        if (!IsMiniMode) { Shell.BringToFront(); return; }
+        IsMiniMode = false;
+        Settings.MiniMode = false;
+        Mini.Hide();
+        Shell.BringToFront();
+        if (_restoreVideoAfterMini)
+        {
+            _restoreVideoAfterMini = false;
+            await Player.SetStreamModeAsync(StreamMode.Video);
+        }
+    }
+
+    /// <summary>切换画面 / 纯音频。迷你模式下要看画面，就先回到主界面。</summary>
+    public async Task SetStreamModeAsync(StreamMode mode)
+    {
+        if (mode == StreamMode.Video && IsMiniMode)
+        {
+            _restoreVideoAfterMini = false;
+            ExitMiniMode();
+        }
+        await Player.SetStreamModeAsync(mode);
+    }
+
+    public Task ToggleStreamModeAsync() =>
+        SetStreamModeAsync(Player.StreamMode == StreamMode.Video ? StreamMode.Audio : StreamMode.Video);
+
+    public void ToggleMiniMode()
+    {
+        if (IsMiniMode) ExitMiniMode(); else EnterMiniMode();
+    }
+
+    void ShowMini()
+    {
+        if (DevMode)
+        {
+            Mini.Left = -4000;
+            Mini.Top = 900;
+            Mini.ShowActivated = false;
+        }
+        else if (!Mini.IsVisible)
+        {
+            Mini.PlaceWindow();
+        }
+        Mini.Show();
+        if (!DevMode) Mini.Activate();
+    }
+
     public static string McpRegisterCommand() => $"claude mcp add vupplayer --scope user -- \"{McpExePath()}\"";
 
     // ---------------- 托盘 ----------------
@@ -152,11 +233,12 @@ public partial class App : Application
             Visible = true,
         };
         var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add("显示主界面", null, (_, _) => Shell.BringToFront());
+        menu.Items.Add("显示主界面", null, (_, _) => ExitMiniMode());
+        menu.Items.Add("迷你模式", null, (_, _) => EnterMiniMode());
         menu.Items.Add("播放 / 暂停", null, (_, _) => Player.TogglePause());
         menu.Items.Add("下一首", null, async (_, _) => await Player.NextAsync());
         menu.Items.Add("上一首", null, async (_, _) => await Player.PreviousAsync());
-        menu.Items.Add("切换画面 / 纯音频", null, async (_, _) => await Player.ToggleStreamModeAsync());
+        menu.Items.Add("切换画面 / 纯音频", null, async (_, _) => await ToggleStreamModeAsync());
         menu.Items.Add("切换播放模式", null, (_, _) => Player.CyclePlayMode());
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => Quit());
@@ -164,6 +246,12 @@ public partial class App : Application
         _tray.MouseClick += (_, e) =>
         {
             if (e.Button != Forms.MouseButtons.Left) return;
+            if (IsMiniMode)
+            {
+                // 迷你模式下：点托盘显示 / 隐藏迷你窗口
+                if (Mini.IsVisible) Mini.Hide(); else ShowMini();
+                return;
+            }
             if (Shell.IsVisible && Shell.WindowState != WindowState.Minimized) Shell.Hide();
             else Shell.BringToFront();
         };
@@ -185,8 +273,10 @@ public partial class App : Application
 
     public void Quit()
     {
+        IsQuitting = true;
         Shell.AllowClose = true;
         Settings.Save();
+        Mini?.Close();
         Shell.Close();
         Shutdown();
     }
@@ -227,7 +317,7 @@ public partial class App : Application
                 return Ok(new JsonObject { ["app"] = "VupPlayer" });
 
             case "show":
-                Shell.BringToFront();
+                if (IsMiniMode) ShowMini(); else Shell.BringToFront();
                 if (a["input"]?.GetValue<string>() is string input)
                 {
                     ViewModel.ImportText = input;
@@ -286,7 +376,7 @@ public partial class App : Application
                         break;
                     case "stream_mode":
                         if (!Enum.TryParse<StreamMode>(value?.GetValue<string>(), true, out var sm)) return Fail("stream_mode 取值：Video / Audio");
-                        await Player.SetStreamModeAsync(sm);
+                        await SetStreamModeAsync(sm);
                         break;
                     default:
                         return Fail("未知 action：" + action);
@@ -298,6 +388,15 @@ public partial class App : Application
                 ViewModel.AfterLibraryEdit();
                 return Ok();
 
+            case "mini_mode":
+            {
+                // {"on": true/false}，不传就切换
+                var on = a["on"]?.GetValue<bool>() ?? !IsMiniMode;
+                if (on) EnterMiniMode(); else ExitMiniMode();
+                await Task.Delay(300);   // 等模式切换（可能涉及重新加载音频流）开始
+                return Ok(NowPlaying());
+            }
+
             case "debug_screenshot" or "debug_select_nav" or "debug_mpv" when !DevMode:
                 return Fail("调试命令只在开发模式（VUPPLAYER_OFFSCREEN=1）下可用");
 
@@ -306,7 +405,8 @@ public partial class App : Application
                 // 开发用：把窗口内容（不含 mpv 画面）渲染成 PNG
                 var path = a["path"]?.GetValue<string>();
                 if (string.IsNullOrWhiteSpace(path)) return Fail("path 为空");
-                var root = (FrameworkElement)Shell.Content;
+                Window target = a["window"]?.GetValue<string>() == "mini" ? Mini : Shell;
+                var root = (FrameworkElement)target.Content;
                 var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(root);
                 var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
                     (int)(root.ActualWidth * dpi.DpiScaleX), (int)(root.ActualHeight * dpi.DpiScaleY),
@@ -314,7 +414,7 @@ public partial class App : Application
                 var dv = new System.Windows.Media.DrawingVisual();
                 using (var dc = dv.RenderOpen())
                 {
-                    dc.DrawRectangle(Shell.Background, null, new Rect(0, 0, root.ActualWidth, root.ActualHeight));
+                    dc.DrawRectangle(target == Mini ? System.Windows.Media.Brushes.White : Shell.Background, null, new Rect(0, 0, root.ActualWidth, root.ActualHeight));
                     dc.DrawRectangle(new System.Windows.Media.VisualBrush(root), null, new Rect(0, 0, root.ActualWidth, root.ActualHeight));
                 }
                 rtb.Render(dv);
@@ -366,6 +466,7 @@ public partial class App : Application
             ["duration_sec"] = Math.Round(Player.Duration, 1),
             ["mode"] = Player.PlayMode.ToString(),
             ["stream_mode"] = Player.StreamMode.ToString(),
+            ["mini_mode"] = IsMiniMode,
             ["volume"] = Math.Round(Player.Volume),
             ["queue_count"] = Player.Queue.Count,
             ["status"] = Player.StatusText,

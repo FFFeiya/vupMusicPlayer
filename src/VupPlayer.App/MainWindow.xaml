@@ -362,6 +362,8 @@
                 <TextBlock Text="&#xE767;" FontFamily="{StaticResource IconFont}" Foreground="{StaticResource SubTextBrush}" VerticalAlignment="Center" />
                 <Slider Style="{StaticResource ThinSlider}" Width="110" Margin="8,0,0,0" Minimum="0" Maximum="100" VerticalAlignment="Center"
                         Value="{Binding Player.Volume}" />
+                <Button Style="{StaticResource IconButton}" Content="&#xE73F;" Margin="10,0,0,0" FontSize="14"
+                        ToolTip="迷你模式（Ctrl+M）" Click="Mini_Click" />
             </StackPanel>
         </Grid>
     </Grid>
