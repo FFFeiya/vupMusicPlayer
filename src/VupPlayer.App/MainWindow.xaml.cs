@@ -33,6 +33,8 @@ public partial class MainWindow : Window
         DataContext = vm;
         Width = settings.WindowWidth;
         Height = settings.WindowHeight;
+        ApplyFullChrome();
+        StateChanged += (_, _) => UpdateMaximizedLayout();
 
         VideoHost.HandleCreated += OnVideoHandle;
         Player.PropertyChanged += Player_PropertyChanged;
@@ -96,6 +98,54 @@ public partial class MainWindow : Window
         CoverImage.Visibility = !video && hasTrack ? Visibility.Visible : Visibility.Collapsed;
         NoTrackHint.Visibility = hasTrack ? Visibility.Collapsed : Visibility.Visible;
     }
+
+    // ---------------- 自绘标题栏 ----------------
+
+    /// <summary>
+    /// 完整界面不用系统标题栏：深色顶栏兼作标题栏（空白处拖动、双击最大化），右侧自绘最小化/最大化/关闭。
+    /// 保留 SingleBorderWindow + 1px 玻璃边，系统的阴影、Win11 圆角、贴靠和最小化动画都还在。
+    /// </summary>
+    void ApplyFullChrome()
+    {
+        WindowStyle = WindowStyle.SingleBorderWindow;
+        System.Windows.Shell.WindowChrome.SetWindowChrome(this, new System.Windows.Shell.WindowChrome
+        {
+            CaptionHeight = 56,
+            ResizeBorderThickness = new Thickness(6),
+            GlassFrameThickness = new Thickness(0, 0, 0, 1),
+            CornerRadius = new CornerRadius(0),
+            UseAeroCaptionButtons = false,
+        });
+        UpdateMaximizedLayout();
+    }
+
+    /// <summary>无系统标题栏的窗口最大化时会超出屏幕一圈边框的宽度，要把内容往里收。</summary>
+    void UpdateMaximizedLayout()
+    {
+        var max = WindowState == WindowState.Maximized && !IsWidget;
+        RootGrid.Margin = max ? MaximizedOverhang() : new Thickness(0);
+        CaptionMaxButton.Content = max ? "" : "";
+        CaptionMaxButton.ToolTip = max ? "还原" : "最大化";
+    }
+
+    Thickness MaximizedOverhang()
+    {
+        const int SM_CXSIZEFRAME = 32, SM_CYSIZEFRAME = 33, SM_CXPADDEDBORDER = 92;
+        var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(this);
+        var x = (GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER)) / dpi.DpiScaleX;
+        var y = (GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER)) / dpi.DpiScaleY;
+        return new Thickness(x, y, x, y);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern int GetSystemMetrics(int index);
+
+    void CaptionMin_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    void CaptionMax_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    void CaptionClose_Click(object sender, RoutedEventArgs e) => Close();
 
     // ---------------- 挂件布局 ----------------
 
@@ -167,8 +217,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                System.Windows.Shell.WindowChrome.SetWindowChrome(this, null);
-                WindowStyle = WindowStyle.SingleBorderWindow;
+                ApplyFullChrome();
                 Topmost = false;
                 MinWidth = 980;
                 MinHeight = 600;

@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\VupPlayer.Core\VupPlayer.Core.csproj" />
@@ -12,6 +12,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <ApplicationIcon>..\VupPlayer.App\Assets\app.ico</ApplicationIcon>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

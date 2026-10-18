@@ -20,7 +20,14 @@
     <ServerGarbageCollector>false</ServerGarbageCollector>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <TieredPGO>true</TieredPGO>
+    <!-- 图标由 scripts/make-icon 生成 -->
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+    <Resource Include="Assets\logo.png" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- WinForms 和 WPF 的同名类型冲突：只保留 WPF 的隐式 using -->

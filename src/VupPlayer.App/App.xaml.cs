@@ -55,6 +55,9 @@ public partial class App : Application
         _singleInstance = new Mutex(true, AppPaths.InstanceMutexName, out var first);
         if (!first)
         {
+            // 锁不是自己的，退出时不能释放（否则 ReleaseMutex 抛异常导致崩溃）
+            _singleInstance.Dispose();
+            _singleInstance = null;
             var args = new JsonObject();
             if (e.Args.Length > 0) args["input"] = string.Join(" ", e.Args);
             try { ControlClient.SendAsync("show", args).GetAwaiter().GetResult(); } catch { }

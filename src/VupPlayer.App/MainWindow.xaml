@@ -6,7 +6,7 @@
         xmlns:vm="clr-namespace:VupPlayer.App.ViewModels"
         Title="VUP 切片播放器" Width="1280" Height="780" MinWidth="980" MinHeight="600"
         Background="{StaticResource BgBrush}" FontFamily="{StaticResource UiFont}" Foreground="{StaticResource TextBrush}"
-        WindowStartupLocation="CenterScreen">
+        Icon="/Assets/app.ico" WindowStartupLocation="CenterScreen">
     <Window.Resources>
         <local:BoolToVisibilityConverter x:Key="BoolVis" />
         <local:TimeConverter x:Key="Time" />
@@ -24,7 +24,7 @@
         </CollectionViewSource>
     </Window.Resources>
 
-    <Grid>
+    <Grid x:Name="RootGrid">
         <Grid.RowDefinitions>
             <RowDefinition x:Name="TopRow" Height="56" />
             <RowDefinition Height="*" />
@@ -34,7 +34,7 @@
         <!-- ============ 挂件模式标题栏（拖动这里移动窗口） ============ -->
         <Grid x:Name="WidgetTitleBar" Grid.Row="0" Background="{StaticResource PanelBrush}" Visibility="Collapsed">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
-                <TextBlock Text="&#xE8D6;" FontFamily="{StaticResource IconFont}" Foreground="{StaticResource AccentBrush}" FontSize="13" VerticalAlignment="Center" />
+                <Image Source="/Assets/logo.png" Width="16" Height="16" RenderOptions.BitmapScalingMode="HighQuality" VerticalAlignment="Center" />
                 <TextBlock Text="VUP 挂件" FontSize="12" Foreground="{StaticResource SubTextBrush}" Margin="8,0,0,0" VerticalAlignment="Center" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,4,0">
@@ -47,19 +47,22 @@
             </StackPanel>
         </Grid>
 
-        <!-- ============ 顶栏 ============ -->
+        <!-- ============ 顶栏（兼作标题栏：空白处拖动、双击最大化） ============ -->
         <Grid x:Name="TopBar" Grid.Row="0" Background="{StaticResource PanelBrush}">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="210" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="18,0,0,0">
-                <TextBlock Text="&#xE8D6;" FontFamily="{StaticResource IconFont}" Foreground="{StaticResource AccentBrush}" FontSize="20" VerticalAlignment="Center" />
-                <TextBlock Text="VUP 切片播放器" FontSize="15" FontWeight="SemiBold" Margin="10,0,0,0" VerticalAlignment="Center" />
+                <Image Source="/Assets/logo.png" Width="26" Height="26" RenderOptions.BitmapScalingMode="HighQuality" VerticalAlignment="Center" />
+                <TextBlock FontSize="15" Margin="10,0,0,1" VerticalAlignment="Center">
+                    <Run Text="VUP" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" /><Run Text=" 切片播放器" FontWeight="SemiBold" />
+                </TextBlock>
             </StackPanel>
-            <Grid Grid.Column="1" Margin="0,10,10,10">
+            <Grid Grid.Column="1" Margin="0,10,10,10" WindowChrome.IsHitTestVisibleInChrome="True">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" MaxWidth="620" />
                     <ColumnDefinition Width="Auto" />
@@ -83,7 +86,8 @@
                 <TextBlock Grid.Column="2" Text="{Binding ImportStatus}" Foreground="{StaticResource SubTextBrush}" FontSize="12"
                            VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding ImportStatus}" />
             </Grid>
-            <Button Grid.Column="2" Style="{StaticResource FlatButton}" Margin="0,0,8,0" Click="Account_Click" VerticalAlignment="Center">
+            <Button Grid.Column="2" Style="{StaticResource FlatButton}" Margin="0,0,8,0" Click="Account_Click" VerticalAlignment="Center"
+                    WindowChrome.IsHitTestVisibleInChrome="True">
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="&#xE77B;" FontFamily="{StaticResource IconFont}" VerticalAlignment="Center" />
                     <TextBlock Margin="8,0,0,0" VerticalAlignment="Center">
@@ -101,7 +105,14 @@
                     </TextBlock>
                 </StackPanel>
             </Button>
-            <Button Grid.Column="3" Style="{StaticResource IconButton}" Content="&#xE713;" Margin="0,0,12,0" ToolTip="设置" Click="Settings_Click" />
+            <Button Grid.Column="3" Style="{StaticResource IconButton}" Content="&#xE713;" Margin="0,0,10,0" ToolTip="设置" Click="Settings_Click"
+                    WindowChrome.IsHitTestVisibleInChrome="True" />
+            <Border Grid.Column="4" Width="1" Height="22" Background="{StaticResource BorderBrush}" HorizontalAlignment="Left" />
+            <StackPanel Grid.Column="4" Orientation="Horizontal" Margin="1,0,0,0">
+                <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" ToolTip="最小化" Click="CaptionMin_Click" />
+                <Button x:Name="CaptionMaxButton" Style="{StaticResource CaptionButton}" Content="&#xE922;" ToolTip="最大化" Click="CaptionMax_Click" />
+                <Button Style="{StaticResource CaptionCloseButton}" Content="&#xE8BB;" ToolTip="关闭" Click="CaptionClose_Click" />
+            </StackPanel>
         </Grid>
 
         <!-- ============ 主体 ============ -->
