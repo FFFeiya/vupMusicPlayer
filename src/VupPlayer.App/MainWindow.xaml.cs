@@ -71,7 +71,11 @@ public partial class MainWindow : Window
         switch (e.PropertyName)
         {
             case nameof(PlayerController.Position):
-                if (!_dragging) ProgressSlider.Value = Player.Position;
+                if (!_dragging)
+                {
+                    ProgressSlider.Value = Player.Position;
+                    if (IsWidget) WidgetProgress.Value = Player.Position;
+                }
                 break;
             case nameof(PlayerController.StreamMode):
             case nameof(PlayerController.Current):
@@ -91,8 +95,223 @@ public partial class MainWindow : Window
         VideoHost.Visibility = video ? Visibility.Visible : Visibility.Hidden;
         CoverImage.Visibility = !video && hasTrack ? Visibility.Visible : Visibility.Collapsed;
         NoTrackHint.Visibility = hasTrack ? Visibility.Collapsed : Visibility.Visible;
-        // 画面模式下把画面区域放大一些
-        MediaArea.Height = video ? 198 : 198;
+    }
+
+    // ---------------- 挂件布局 ----------------
+
+    /// <summary>当前是否是挂件布局：只保留右侧的画面 + 列表，加紧凑控制条和小搜索框，窗口置顶、无边框。</summary>
+    public bool IsWidget { get; private set; }
+
+    Rect _fullBounds;
+    WindowState _fullState = WindowState.Normal;
+    bool _applyingLayout;
+
+    public void ApplyLayout(bool widget, bool offscreen = false)
+    {
+        if (widget == IsWidget && IsLoaded) return;
+        _applyingLayout = true;
+        try
+        {
+            if (widget && !IsWidget)
+            {
+                _fullState = WindowState == WindowState.Minimized ? WindowState.Normal : WindowState;
+                if (WindowState != WindowState.Normal) WindowState = WindowState.Normal;
+                // 窗口还没显示过时 Left/Top 是 NaN，回到完整布局时改为居中
+                _fullBounds = double.IsNaN(Left) || double.IsNaN(Top) ? Rect.Empty : new Rect(Left, Top, Width, Height);
+                WindowStartupLocation = WindowStartupLocation.Manual;
+            }
+            IsWidget = widget;
+            _settings.WidgetLayout = widget;
+
+            var full = widget ? Visibility.Collapsed : Visibility.Visible;
+            var only = widget ? Visibility.Visible : Visibility.Collapsed;
+            TopBar.Visibility = full;
+            PlayerBar.Visibility = full;
+            NavPanel.Visibility = full;
+            ListPanel.Visibility = full;
+            UpcomingHeader.Visibility = full;
+            NowPlayingExtra.Visibility = full;
+            WidgetTitleBar.Visibility = only;
+            WidgetControls.Visibility = only;
+            WidgetSearchBox.Visibility = only;
+
+            TopRow.Height = new GridLength(widget ? 30 : 56);
+            BottomRow.Height = new GridLength(widget ? 0 : 88);
+            NavColumn.Width = new GridLength(widget ? 0 : 210);
+            ListColumn.Width = widget ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+            RightColumn.Width = widget ? new GridLength(1, GridUnitType.Star) : new GridLength(380);
+            RightPanel.Margin = widget ? new Thickness(0) : new Thickness(0, 12, 12, 10);
+            RightPanel.CornerRadius = new CornerRadius(widget ? 0 : 10);
+            RightGrid.Margin = widget ? new Thickness(10, 6, 10, 8) : new Thickness(14);
+            NowPlayingInfo.Margin = widget ? new Thickness(2, 8, 2, 0) : new Thickness(2, 12, 2, 0);
+            NowTitle.FontSize = widget ? 14 : 17;
+
+            if (widget)
+            {
+                // 无边框，但保留拖动标题栏和四边缩放
+                WindowStyle = WindowStyle.None;
+                System.Windows.Shell.WindowChrome.SetWindowChrome(this, new System.Windows.Shell.WindowChrome
+                {
+                    CaptionHeight = 30,
+                    ResizeBorderThickness = new Thickness(6),
+                    GlassFrameThickness = new Thickness(0),
+                    CornerRadius = new CornerRadius(0),
+                    UseAeroCaptionButtons = false,
+                });
+                Topmost = true;
+                MinWidth = 300;
+                MinHeight = 420;
+                Width = Math.Max(MinWidth, _settings.WidgetWidth);
+                Height = Math.Max(MinHeight, _settings.WidgetHeight);
+                PlaceWidget(offscreen);
+            }
+            else
+            {
+                System.Windows.Shell.WindowChrome.SetWindowChrome(this, null);
+                WindowStyle = WindowStyle.SingleBorderWindow;
+                Topmost = false;
+                MinWidth = 980;
+                MinHeight = 600;
+                if (!_fullBounds.IsEmpty && _fullBounds.Width > 0)
+                {
+                    Left = _fullBounds.Left;
+                    Top = _fullBounds.Top;
+                    Width = Math.Max(MinWidth, _fullBounds.Width);
+                    Height = Math.Max(MinHeight, _fullBounds.Height);
+                }
+                else
+                {
+                    Width = Math.Max(MinWidth, _settings.WindowWidth);
+                    Height = Math.Max(MinHeight, _settings.WindowHeight);
+                    var wa = SystemParameters.WorkArea;
+                    Left = wa.Left + (wa.Width - Width) / 2;
+                    Top = wa.Top + (wa.Height - Height) / 2;
+                }
+                WindowState = _fullState;
+                MediaArea.Height = 198;
+            }
+        }
+        finally
+        {
+            _applyingLayout = false;
+        }
+        UpdateWidgetMediaHeight();
+    }
+
+    void PlaceWidget(bool offscreen)
+    {
+        if (offscreen)
+        {
+            Left = -4000;
+            Top = 0;
+            return;
+        }
+        var vs = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
+            SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
+        if (_settings.WidgetLeft is double l && _settings.WidgetTop is double t
+            && vs.Contains(new Point(l + 40, t + 20)) && vs.Contains(new Point(l + Width - 40, t + 100)))
+        {
+            Left = l;
+            Top = t;
+            return;
+        }
+        var wa = SystemParameters.WorkArea;
+        Left = wa.Right - Width - 16;
+        Top = Math.Max(wa.Top + 16, wa.Bottom - Height - 16);
+    }
+
+    /// <summary>挂件里的画面按 16:9 跟随宽度，但最多占窗口高度的一半，给列表留空间。</summary>
+    void UpdateWidgetMediaHeight()
+    {
+        if (!IsWidget || RightGrid.ActualWidth <= 0) return;
+        var h = RightGrid.ActualWidth * 9 / 16;
+        MediaArea.Height = Math.Clamp(h, 120, Math.Max(120, ActualHeight * 0.5));
+    }
+
+    protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
+    {
+        base.OnRenderSizeChanged(sizeInfo);
+        UpdateWidgetMediaHeight();
+        RememberWidgetBounds();
+    }
+
+    protected override void OnLocationChanged(EventArgs e)
+    {
+        base.OnLocationChanged(e);
+        RememberWidgetBounds();
+    }
+
+    void RememberWidgetBounds()
+    {
+        if (!IsWidget || _applyingLayout || !IsVisible || Left < -3000) return;
+        _settings.WidgetLeft = Left;
+        _settings.WidgetTop = Top;
+        _settings.WidgetWidth = Width;
+        _settings.WidgetHeight = Height;
+    }
+
+    void Widget_Click(object sender, RoutedEventArgs e) => _app.SetWidgetLayout(true);
+    void WidgetExit_Click(object sender, RoutedEventArgs e) => _app.SetWidgetLayout(false);
+
+    void WidgetHide_Click(object sender, RoutedEventArgs e)
+    {
+        Hide();
+        _app.ShowTrayTip();
+    }
+
+    void RightPanel_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        // 挂件模式下在封面上滚轮调音量（画面模式时 mpv 子窗口自己吃掉滚轮，不会到这里）
+        if (!IsWidget || !MediaArea.IsMouseOver) return;
+        Player.Volume = Math.Clamp(Player.Volume + (e.Delta > 0 ? 5 : -5), 0, 100);
+        e.Handled = true;
+    }
+
+    void WidgetSearch_KeyDown(object sender, KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.Enter when _vm.WidgetResults.Count > 0:
+                _ = Player.PlayTrackAsync(_vm.WidgetResults[0].Id);
+                e.Handled = true;
+                break;
+            case Key.Down when _vm.WidgetResults.Count > 0:
+                WidgetResultList.SelectedIndex = 0;
+                (WidgetResultList.ItemContainerGenerator.ContainerFromIndex(0) as ListBoxItem)?.Focus();
+                e.Handled = true;
+                break;
+            case Key.Escape when _vm.WidgetSearch.Length > 0:
+                _vm.WidgetSearch = "";
+                WidgetSearchBox.Text = "";
+                e.Handled = true;
+                break;
+        }
+    }
+
+    async void WidgetResult_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if ((e.OriginalSource as FrameworkElement)?.DataContext is TrackView t)
+            await Player.PlayTrackAsync(t.Id);
+    }
+
+    async void WidgetResult_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && WidgetResultList.SelectedItem is TrackView t)
+        {
+            await Player.PlayTrackAsync(t.Id);
+            e.Handled = true;
+        }
+    }
+
+    void WidgetResult_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        var menu = WidgetResultList.ContextMenu!;
+        menu.Items.Clear();
+        if (WidgetResultList.SelectedItem is not TrackView t) { e.Handled = true; return; }
+        Add(menu, "播放", async () => await Player.PlayTrackAsync(t.Id));
+        Add(menu, "下一首播放", () => _vm.PlayNext([t]));
+        Add(menu, "加入播放队列", () => _vm.Enqueue([t]));
+        Add(menu, t.Favorite ? "取消喜欢" : "喜欢", () => _vm.ToggleFavorite([t]));
     }
 
     // ---------------- 播放控制 ----------------
@@ -100,7 +319,7 @@ public partial class MainWindow : Window
     void Play_Click(object sender, RoutedEventArgs e) => Player.TogglePause();
     async void Next_Click(object sender, RoutedEventArgs e) => await Player.NextAsync();
     async void Prev_Click(object sender, RoutedEventArgs e) => await Player.PreviousAsync();
-    async void Stream_Click(object sender, RoutedEventArgs e) => await Player.ToggleStreamModeAsync();
+    async void Stream_Click(object sender, RoutedEventArgs e) => await _app.ToggleStreamModeAsync();
     void Mode_Click(object sender, RoutedEventArgs e) => Player.CyclePlayMode();
     void Mini_Click(object sender, RoutedEventArgs e) => _app.EnterMiniMode();
 
@@ -109,9 +328,10 @@ public partial class MainWindow : Window
     void Progress_MouseUp(object sender, MouseButtonEventArgs e)
     {
         // IsMoveToPointEnabled 会在 MouseDown 后先更新 Value，这里统一在松开时跳转
+        var slider = (Slider)sender;
         Dispatcher.BeginInvoke(() =>
         {
-            Player.Seek(ProgressSlider.Value);
+            Player.Seek(slider.Value);
             _dragging = false;
         });
     }
@@ -125,7 +345,26 @@ public partial class MainWindow : Window
             e.Handled = true;
             return;
         }
+        if (ctrl && e.Key == Key.G)
+        {
+            _app.SetWidgetLayout(!IsWidget);
+            e.Handled = true;
+            return;
+        }
+        if (ctrl && e.Key == Key.F && IsWidget)
+        {
+            WidgetSearchBox.Focus();
+            WidgetSearchBox.SelectAll();
+            e.Handled = true;
+            return;
+        }
         if (Keyboard.FocusedElement is TextBox) return;
+        if (e.Key == Key.Escape && IsWidget)
+        {
+            _app.SetWidgetLayout(false);
+            e.Handled = true;
+            return;
+        }
         switch (e.Key)
         {
             case Key.Space:
@@ -133,7 +372,7 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 break;
             case Key.V when !ctrl:
-                await Player.ToggleStreamModeAsync();
+                await _app.ToggleStreamModeAsync();
                 e.Handled = true;
                 break;
             case Key.Right when ctrl:
@@ -407,7 +646,7 @@ public partial class MainWindow : Window
             _app.ShowTrayTip();
             return;
         }
-        if (WindowState == WindowState.Normal)
+        if (WindowState == WindowState.Normal && !IsWidget)
         {
             _settings.WindowWidth = Width;
             _settings.WindowHeight = Height;

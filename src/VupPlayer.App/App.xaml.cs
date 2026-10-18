@@ -94,6 +94,7 @@ public partial class App : Application
             Shell.ShowInTaskbar = false;
             _trayTipShown = true;
         }
+        if (Settings.WidgetLayout) Shell.ApplyLayout(true, offscreen: DevMode);
         Shell.Show();
         Mini = new MiniWindow(ViewModel, Settings, this);
 
@@ -157,7 +158,7 @@ public partial class App : Application
         if (IsMiniMode) { ShowMini(); return; }
         IsMiniMode = true;
         Settings.MiniMode = true;
-        if (Shell.WindowState == WindowState.Normal)
+        if (Shell.WindowState == WindowState.Normal && !Shell.IsWidget)
         {
             Settings.WindowWidth = Shell.Width;
             Settings.WindowHeight = Shell.Height;
@@ -199,6 +200,18 @@ public partial class App : Application
     public Task ToggleStreamModeAsync() =>
         SetStreamModeAsync(Player.StreamMode == StreamMode.Video ? StreamMode.Audio : StreamMode.Video);
 
+    /// <summary>主窗口在完整布局和挂件布局之间切换。处于迷你条时先回到主窗口。</summary>
+    public void SetWidgetLayout(bool widget)
+    {
+        if (IsMiniMode)
+        {
+            // 挂件能显示画面，所以进迷你条前的画面模式照常恢复
+            ExitMiniMode();
+        }
+        Shell.ApplyLayout(widget, offscreen: DevMode);
+        Shell.BringToFront();
+    }
+
     public void ToggleMiniMode()
     {
         if (IsMiniMode) ExitMiniMode(); else EnterMiniMode();
@@ -233,8 +246,9 @@ public partial class App : Application
             Visible = true,
         };
         var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add("显示主界面", null, (_, _) => ExitMiniMode());
-        menu.Items.Add("迷你模式", null, (_, _) => EnterMiniMode());
+        menu.Items.Add("显示主界面", null, (_, _) => SetWidgetLayout(false));
+        menu.Items.Add("挂件模式（画面 + 列表）", null, (_, _) => SetWidgetLayout(true));
+        menu.Items.Add("迷你条", null, (_, _) => EnterMiniMode());
         menu.Items.Add("播放 / 暂停", null, (_, _) => Player.TogglePause());
         menu.Items.Add("下一首", null, async (_, _) => await Player.NextAsync());
         menu.Items.Add("上一首", null, async (_, _) => await Player.PreviousAsync());
@@ -388,6 +402,20 @@ public partial class App : Application
                 ViewModel.AfterLibraryEdit();
                 return Ok();
 
+            case "view_mode":
+            {
+                // {"mode": "full" | "widget" | "mini"}
+                switch (a["mode"]?.GetValue<string>()?.ToLowerInvariant())
+                {
+                    case "full": SetWidgetLayout(false); break;
+                    case "widget": SetWidgetLayout(true); break;
+                    case "mini": EnterMiniMode(); break;
+                    default: return Fail("mode 取值：full / widget / mini");
+                }
+                await Task.Delay(300);
+                return Ok(NowPlaying());
+            }
+
             case "mini_mode":
             {
                 // {"on": true/false}，不传就切换
@@ -397,7 +425,7 @@ public partial class App : Application
                 return Ok(NowPlaying());
             }
 
-            case "debug_screenshot" or "debug_select_nav" or "debug_mpv" when !DevMode:
+            case "debug_screenshot" or "debug_select_nav" or "debug_mpv" or "debug_widget_search" when !DevMode:
                 return Fail("调试命令只在开发模式（VUPPLAYER_OFFSCREEN=1）下可用");
 
             case "debug_screenshot":
@@ -413,16 +441,18 @@ public partial class App : Application
                     dpi.PixelsPerInchX, dpi.PixelsPerInchY, System.Windows.Media.PixelFormats.Pbgra32);
                 var dv = new System.Windows.Media.DrawingVisual();
                 using (var dc = dv.RenderOpen())
-                {
                     dc.DrawRectangle(target == Mini ? System.Windows.Media.Brushes.White : Shell.Background, null, new Rect(0, 0, root.ActualWidth, root.ActualHeight));
-                    dc.DrawRectangle(new System.Windows.Media.VisualBrush(root), null, new Rect(0, 0, root.ActualWidth, root.ActualHeight));
-                }
                 rtb.Render(dv);
+                rtb.Render(root);   // 直接渲染根元素，避免 VisualBrush 按内容边界拉伸
                 var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
                 enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
                 using (var fs = File.Create(path)) enc.Save(fs);
                 return Ok(new JsonObject { ["path"] = path });
             }
+
+            case "debug_widget_search":
+                ViewModel.WidgetSearch = a["text"]?.GetValue<string>() ?? "";
+                return Ok(new JsonObject { ["results"] = ViewModel.WidgetResults.Count });
 
             case "debug_mpv":
             {
@@ -467,6 +497,7 @@ public partial class App : Application
             ["mode"] = Player.PlayMode.ToString(),
             ["stream_mode"] = Player.StreamMode.ToString(),
             ["mini_mode"] = IsMiniMode,
+            ["view_mode"] = IsMiniMode ? "mini" : Shell.IsWidget ? "widget" : "full",
             ["volume"] = Math.Round(Player.Volume),
             ["queue_count"] = Player.Queue.Count,
             ["status"] = Player.StatusText,

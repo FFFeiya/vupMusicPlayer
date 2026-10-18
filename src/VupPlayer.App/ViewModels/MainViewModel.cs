@@ -51,6 +51,27 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] public partial string ListTitle { get; set; } = "全部曲目";
     [ObservableProperty] public partial string? ListSubtitle { get; set; }
 
+    // ---------------- 挂件模式的小搜索 ----------------
+
+    public ObservableCollection<TrackView> WidgetResults { get; } = [];
+    [ObservableProperty] public partial string WidgetSearch { get; set; } = "";
+    [ObservableProperty] public partial bool WidgetNoResults { get; set; }
+
+    partial void OnWidgetSearchChanged(string value) => RefreshWidgetResults();
+
+    void RefreshWidgetResults()
+    {
+        WidgetResults.Clear();
+        if (string.IsNullOrWhiteSpace(WidgetSearch))
+        {
+            WidgetNoResults = false;
+            return;
+        }
+        foreach (var t in _repo.QueryTracks(new TrackQuery { Keyword = WidgetSearch.Trim(), OrderBy = "plays_desc", Limit = 50 }))
+            WidgetResults.Add(t);
+        WidgetNoResults = WidgetResults.Count == 0;
+    }
+
     public MainViewModel(LibraryRepository repo, BiliApi api, LibraryImporter importer, PlayerController player)
     {
         _repo = repo;
@@ -307,6 +328,7 @@ public sealed partial class MainViewModel : ObservableObject
     public void AfterLibraryEdit()
     {
         RebuildNav();
+        RefreshWidgetResults();
         Player.RefreshCurrent();
         RefreshUpcoming();
     }

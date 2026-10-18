@@ -21,6 +21,12 @@ public sealed class AppSettings
     public bool MiniMode { get; set; }
     public double? MiniLeft { get; set; }
     public double? MiniTop { get; set; }
+    /// <summary>主窗口是否处于挂件布局（画面 + 列表 + 搜索的置顶小窗）。</summary>
+    public bool WidgetLayout { get; set; }
+    public double? WidgetLeft { get; set; }
+    public double? WidgetTop { get; set; }
+    public double WidgetWidth { get; set; } = 380;
+    public double WidgetHeight { get; set; } = 640;
     public double WindowWidth { get; set; } = 1280;
     public double WindowHeight { get; set; } = 780;
 
