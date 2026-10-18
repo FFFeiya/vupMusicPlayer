@@ -60,7 +60,7 @@ public sealed class PlayModeGlyphConverter : IValueConverter
             PlayMode.RepeatAll => "",
             PlayMode.RepeatOne => "",
             PlayMode.Shuffle => "",
-            PlayMode.Random => "",
+            PlayMode.Random => "",
             _ => "",
         };
     }

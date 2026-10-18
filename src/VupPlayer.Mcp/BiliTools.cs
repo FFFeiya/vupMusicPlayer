@@ -14,7 +14,7 @@ namespace VupPlayer.Mcp;
 [McpServerToolType]
 public sealed class BiliTools(LibraryRepository repo)
 {
-    static readonly Lazy<BiliApi> Api = new(() => new BiliApi(CookieStore.Load()));
+    internal static readonly Lazy<BiliApi> Api = new(() => new BiliApi(CookieStore.Load()));
 
     [McpServerTool(Name = "search_bilibili", ReadOnly = true, OpenWorld = true)]
     [Description("""

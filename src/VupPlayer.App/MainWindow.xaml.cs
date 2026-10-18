@@ -602,6 +602,7 @@ public partial class MainWindow : Window
             quality.Items.Add(mi);
         }
         menu.Items.Add(quality);
+        menu.Items.Add(BuildRecommendMenu());
 
         var ytdlp = new MenuItem { Header = "优先用 yt-dlp 取流（较慢，接口失效时使用）", IsCheckable = true, IsChecked = _settings.PreferYtDlp };
         ytdlp.Click += (_, _) => { _settings.PreferYtDlp = ytdlp.IsChecked; _app.ApplyResolverOrder(); };
@@ -622,6 +623,58 @@ public partial class MainWindow : Window
         menu.Items.Add(new Separator());
         Add(menu, "退出", () => _app.Quit());
         menu.IsOpen = true;
+    }
+
+    MenuItem BuildRecommendMenu()
+    {
+        var root = new MenuItem { Header = "智能推荐" };
+
+        void Radio<T>(MenuItem parent, string header, T value, T current, Action<T> apply)
+        {
+            var mi = new MenuItem { Header = header, IsCheckable = true, IsChecked = EqualityComparer<T>.Default.Equals(value, current) };
+            mi.Click += (_, _) => { apply(value); _app.ApplyRecommendSettings(); };
+            parent.Items.Add(mi);
+        }
+
+        var scope = new MenuItem { Header = "推荐范围" };
+        Radio(scope, "整个曲库", true, _settings.RecommendFromLibrary, v => _settings.RecommendFromLibrary = v);
+        Radio(scope, "只在当前列表里", false, _settings.RecommendFromLibrary, v => _settings.RecommendFromLibrary = v);
+        root.Items.Add(scope);
+
+        var taste = new MenuItem { Header = "口味" };
+        Radio(taste, "保守：多放爱听的", 0.6, _settings.RecommendTemperature, v => _settings.RecommendTemperature = v);
+        Radio(taste, "均衡", 1.0, _settings.RecommendTemperature, v => _settings.RecommendTemperature = v);
+        Radio(taste, "冒险：多翻没怎么听的", 1.6, _settings.RecommendTemperature, v => _settings.RecommendTemperature = v);
+        root.Items.Add(taste);
+
+        var disc = new MenuItem { Header = "B 站发现新切片" };
+        Radio(disc, "关闭", 0.0, _settings.DiscoveryRate, v => _settings.DiscoveryRate = v);
+        Radio(disc, "偶尔（约 1/10）", 0.1, _settings.DiscoveryRate, v => _settings.DiscoveryRate = v);
+        Radio(disc, "经常（约 1/4）", 0.25, _settings.DiscoveryRate, v => _settings.DiscoveryRate = v);
+        root.Items.Add(disc);
+
+        var algo = new MenuItem { Header = "推荐算法" };
+        foreach (var (name, display) in Core.Recommend.RecommenderRegistry.Available)
+            Radio(algo, display, name, _settings.Recommender, v => _settings.Recommender = v);
+        root.Items.Add(algo);
+
+        root.Items.Add(new Separator());
+        Add(root, "立即刷新 B 站发现池", async () =>
+        {
+            _vm.ImportStatus = "正在按常听的主播去 B 站找新切片…";
+            var r = await _app.RefreshDiscoveryAsync(force: true);
+            _vm.ImportStatus = r is null ? "发现池正在刷新中"
+                : r.Error is not null && r.Added == 0 ? "刷新发现池失败：" + r.Error
+                : $"发现池新增 {r.Added} 个候选（搜了 {string.Join("、", r.Streamers)}）";
+        });
+        Add(root, "看看接下来可能推荐什么…", () =>
+        {
+            var top = _vm.Player.PreviewScores().Take(12).ToList();
+            var text = top.Count == 0 ? "当前推荐算法不支持预览，或者曲库是空的。"
+                : string.Join("\n", top.Select((s, i) => $"{i + 1}. {s.Title}    分数 {s.Score:0.00}\n     {s.Reason}"));
+            MessageBox.Show(this, text + "\n\n（实际播放时按分数加权随机抽取，不一定按这个顺序）", "推荐预览");
+        });
+        return root;
     }
 
     static void Add(ItemsControl parent, string header, Action action)

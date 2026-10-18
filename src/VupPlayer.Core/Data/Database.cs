@@ -176,5 +176,35 @@ static class Migrations
         CREATE INDEX ix_play_events_track ON play_events(track_id);
         CREATE INDEX ix_play_events_time  ON play_events(started_at);
         """,
+
+        // v2：推荐机制
+        """
+        -- 这次播放是谁选的（推荐器名 / manual / queue），以及推荐理由，用来比较不同算法
+        ALTER TABLE play_events ADD COLUMN recommender TEXT;
+        ALTER TABLE play_events ADD COLUMN reason TEXT;
+
+        -- B 站发现池：按常听主播去 B 站搜到的、还没导入曲库的候选
+        CREATE TABLE discovery (
+          bvid          TEXT PRIMARY KEY,
+          title         TEXT NOT NULL,
+          uploader      TEXT,
+          uploader_mid  INTEGER,
+          duration_sec  INTEGER,
+          play_count    INTEGER,
+          pubdate       INTEGER,
+          cover_url     TEXT,
+          streamer      TEXT,            -- 按哪个主播搜到的
+          query         TEXT,
+          found_at      INTEGER NOT NULL,
+          state         TEXT NOT NULL DEFAULT 'new',   -- new / imported / rejected
+          state_at      INTEGER
+        );
+        CREATE INDEX ix_discovery_state ON discovery(state);
+
+        CREATE TABLE meta (
+          key   TEXT PRIMARY KEY,
+          value TEXT
+        );
+        """,
     ];
 }

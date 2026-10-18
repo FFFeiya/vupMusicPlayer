@@ -17,6 +17,16 @@ public sealed class AppSettings
     public bool CloseToTray { get; set; } = true;
     public bool PreferYtDlp { get; set; }
     public long? LastTrackId { get; set; }
+    // ---- 推荐 ----
+    /// <summary>推荐器：weighted-v1 / random。</summary>
+    public string Recommender { get; set; } = "weighted-v1";
+    /// <summary>推荐范围：true 整个曲库，false 当前列表。</summary>
+    public bool RecommendFromLibrary { get; set; } = true;
+    /// <summary>口味：0.6 保守 / 1.0 均衡 / 1.6 冒险。</summary>
+    public double RecommendTemperature { get; set; } = 1.0;
+    /// <summary>从 B 站发现池挑新歌的比例：0 关闭 / 0.1 偶尔 / 0.25 经常。</summary>
+    public double DiscoveryRate { get; set; } = 0.1;
+
     /// <summary>上次退出时是否处于迷你模式（下次启动直接进入）。</summary>
     public bool MiniMode { get; set; }
     public double? MiniLeft { get; set; }

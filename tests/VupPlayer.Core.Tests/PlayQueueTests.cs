@@ -175,7 +175,7 @@ public class RandomRecommenderTests
         {
             var next = await r.NextAsync(new RecommendContext(candidates, [1, 2, 3, 4, 5], 5));
             Assert.NotNull(next);
-            Assert.DoesNotContain(next!.Value, new long[] { 1, 2, 3, 4, 5 });
+            Assert.DoesNotContain(next!.TrackId!.Value, new long[] { 1, 2, 3, 4, 5 });
         }
     }
 
@@ -184,7 +184,7 @@ public class RandomRecommenderTests
     {
         var r = new RandomRecommender(new Random(1));
         var next = await r.NextAsync(new RecommendContext([1, 2], [1, 2], 1));
-        Assert.Equal(2, next);
+        Assert.Equal(2, next!.TrackId);
     }
 
     [Fact]
@@ -204,7 +204,7 @@ public class RandomRecommenderTests
         var history = new List<long>();
         for (var i = 0; i < 100; i++)
         {
-            cur = await r.NextAsync(new RecommendContext(candidates, history, cur));
+            cur = (await r.NextAsync(new RecommendContext(candidates, history, cur)))!.TrackId;
             history.Add(cur!.Value);
             seen.Add(cur.Value);
         }

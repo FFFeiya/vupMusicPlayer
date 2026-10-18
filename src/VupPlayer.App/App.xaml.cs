@@ -21,6 +21,8 @@ public partial class App : Application
     ControlServer? _control;
     Forms.NotifyIcon? _tray;
     DispatcherTimer? _saveTimer;
+    DispatcherTimer? _discoveryTimer;
+    bool _discoveryRunning;
     MediaControls? _media;
     bool _trayTipShown;
 
@@ -32,6 +34,8 @@ public partial class App : Application
     public YtDlp YtDlp { get; private set; } = null!;
     public StreamPreferences StreamPrefs { get; } = new();
     public CachingStreamResolver Resolver { get; private set; } = null!;
+    public LibraryImporter Importer { get; private set; } = null!;
+    public DiscoveryService Discovery { get; private set; } = null!;
     public AppSettings Settings { get; private set; } = null!;
     public PlayerController Player { get; private set; } = null!;
     public MainViewModel ViewModel { get; private set; } = null!;
@@ -81,7 +85,10 @@ public partial class App : Application
         ApplyResolverOrder();
 
         Player = new PlayerController(Repo, Resolver, Settings, Dispatcher);
-        ViewModel = new MainViewModel(Repo, Api, new LibraryImporter(Api, YtDlp, Repo), Player);
+        Importer = new LibraryImporter(Api, YtDlp, Repo);
+        Discovery = new DiscoveryService(Api, Repo);
+        Player.DiscoveryImporter = ImportDiscoveryAsync;
+        ViewModel = new MainViewModel(Repo, Api, Importer, Player);
         Shell = new MainWindow(ViewModel, Settings, this);
         MainWindow = Shell;
         if (DevMode)
@@ -113,11 +120,63 @@ public partial class App : Application
         _saveTimer.Tick += (_, _) => Settings.Save();
         _saveTimer.Start();
 
+        // B 站发现池：启动 20 秒后检查一次，之后每 30 分钟检查是否需要刷新
+        _discoveryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+        _discoveryTimer.Tick += async (_, _) =>
+        {
+            _discoveryTimer.Interval = TimeSpan.FromMinutes(30);
+            if (Settings.DiscoveryRate > 0) await RefreshDiscoveryAsync(force: false);
+        };
+        _discoveryTimer.Start();
+
         if (e.Args.Length > 0)
         {
             ViewModel.ImportText = string.Join(" ", e.Args);
             ViewModel.ImportCommand.Execute(null);
         }
+    }
+
+    // ---------------- B 站发现 ----------------
+
+    /// <summary>推荐器挑中发现池里的视频时调用：导入曲库、挂到「B站发现」订阅源，返回要播放的曲目。</summary>
+    async Task<long?> ImportDiscoveryAsync(string bvid)
+    {
+        var r = await Task.Run(() => Importer.ImportAsync(bvid));
+        var sourceId = Repo.UpsertSource("discovery", "auto", "B站发现");
+        foreach (var b in r.Bvids) Repo.LinkSourceVideo(sourceId, b);
+        Repo.SetDiscoveryState(bvid, "imported");
+        ViewModel.AfterLibraryEdit();
+        return Repo.GetTracksByBvid(bvid).FirstOrDefault()?.Id;
+    }
+
+    public async Task<DiscoveryRefreshResult?> RefreshDiscoveryAsync(bool force)
+    {
+        if (_discoveryRunning) return null;
+        _discoveryRunning = true;
+        try
+        {
+            var r = await Task.Run(() => Discovery.RefreshAsync(force));
+            if (r.Queries > 0 || r.Error is not null)
+                AppLog.Write($"发现池刷新：新增 {r.Added}，搜索 {r.Queries} 次，主播 {string.Join("、", r.Streamers)}{(r.Error is null ? "" : "，错误：" + r.Error)}");
+            return r;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("发现池刷新失败：" + ex.Message);
+            return new DiscoveryRefreshResult(0, 0, [], ex.Message);
+        }
+        finally
+        {
+            _discoveryRunning = false;
+        }
+    }
+
+    public void ApplyRecommendSettings()
+    {
+        Player.RecommendOptions.Temperature = Settings.RecommendTemperature;
+        Player.RecommendOptions.DiscoveryRate = Settings.DiscoveryRate;
+        Player.RecommendFromLibrary = Settings.RecommendFromLibrary;
+        Player.SetRecommender(Settings.Recommender);
     }
 
     public void ApplyResolverOrder()
@@ -515,6 +574,7 @@ public partial class App : Application
             ["volume"] = Math.Round(Player.Volume),
             ["queue_count"] = Player.Queue.Count,
             ["status"] = Player.StatusText,
+            ["recommend_reason"] = Player.RecommendReason,
         };
         if (Player.Current is { } t) o["track"] = Brief(t);
         return o;

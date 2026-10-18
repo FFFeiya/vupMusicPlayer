@@ -541,9 +541,129 @@ public sealed class LibraryRepository(Database db)
     {
         using var c = Db.Open();
         c.Execute("""
-            INSERT INTO play_events (track_id, started_at, played_sec, completed, skipped, mode, context)
-            VALUES (@TrackId, @StartedAt, @PlayedSec, @Completed, @Skipped, @Mode, @Context)
+            INSERT INTO play_events (track_id, started_at, played_sec, completed, skipped, mode, context, recommender, reason)
+            VALUES (@TrackId, @StartedAt, @PlayedSec, @Completed, @Skipped, @Mode, @Context, @Recommender, @Reason)
             """, e);
+    }
+
+    // ---------------- 推荐用数据 ----------------
+
+    /// <summary>每首未隐藏曲目的打分特征。评分：听完 +1，30 秒内跳过 −1，其余按听的比例映射到 −1..1。</summary>
+    public IReadOnlyList<TrackFeatures> GetRecommendFeatures()
+    {
+        using var c = Db.Open();
+        return c.Query<TrackFeatures>("""
+            SELECT t.id, t.bvid, COALESCE(t.song_title, v.title) AS title, t.song_title, t.streamer_id, s.name AS streamer_name,
+                   v.up_mid, v.up_name, t.favorite, v.added_at,
+                   (SELECT GROUP_CONCAT(g.name, ',') FROM track_tags tt JOIN tags g ON g.id = tt.tag_id WHERE tt.track_id = t.id) AS tags,
+                   COUNT(e.id) AS plays,
+                   CAST(COALESCE(SUM(CASE
+                       WHEN e.completed = 1 THEN 1.0
+                       WHEN e.skipped = 1 THEN -1.0
+                       ELSE MAX(-1.0, MIN(1.0, 2.0 * e.played_sec /
+                            MAX(COALESCE(t.end_sec - COALESCE(t.start_sec, 0), t.duration_sec, 1), 1) - 1.0))
+                   END), 0.0) AS REAL) AS rating_sum,
+                   MAX(e.started_at) AS last_played_at
+            FROM tracks t
+            JOIN videos v ON v.bvid = t.bvid
+            LEFT JOIN streamers s ON s.id = t.streamer_id
+            LEFT JOIN play_events e ON e.track_id = t.id
+            WHERE t.hidden = 0 AND v.status = 'ok'
+            GROUP BY t.id
+            """).ToList();
+    }
+
+    /// <summary>最近的播放，最新的在前。</summary>
+    public IReadOnlyList<RecentPlay> GetRecentPlays(int limit)
+    {
+        using var c = Db.Open();
+        return c.Query<RecentPlay>("""
+            SELECT e.track_id, t.streamer_id, t.song_title, e.completed, e.skipped, e.started_at,
+                   (SELECT GROUP_CONCAT(g.name, ',') FROM track_tags tt JOIN tags g ON g.id = tt.tag_id WHERE tt.track_id = t.id) AS tags
+            FROM play_events e JOIN tracks t ON t.id = e.track_id
+            ORDER BY e.started_at DESC, e.id DESC LIMIT @limit
+            """, new { limit }).ToList();
+    }
+
+    public IReadOnlyList<long> GetVisibleTrackIds()
+    {
+        using var c = Db.Open();
+        return c.Query<long>("SELECT t.id FROM tracks t JOIN videos v ON v.bvid = t.bvid WHERE t.hidden = 0 AND v.status = 'ok'").ToList();
+    }
+
+    /// <summary>按推荐器统计：播放次数、完播率、跳过率。</summary>
+    public IReadOnlyList<RecommenderStat> GetRecommenderStats(long? sinceUnix)
+    {
+        using var c = Db.Open();
+        return c.Query<RecommenderStat>("""
+            SELECT COALESCE(recommender, '（旧记录）') AS recommender, COUNT(*) AS plays,
+                   SUM(completed) AS completed, SUM(skipped) AS skipped, ROUND(AVG(played_sec), 1) AS avg_played_sec
+            FROM play_events WHERE (@sinceUnix IS NULL OR started_at >= @sinceUnix)
+            GROUP BY recommender ORDER BY plays DESC
+            """, new { sinceUnix }).ToList();
+    }
+
+    // ---------------- B 站发现池 ----------------
+
+    /// <summary>加入发现池，已经存在（任何状态）的跳过。返回新加入数。</summary>
+    public int AddDiscovery(IEnumerable<DiscoveryItem> items)
+    {
+        using var c = Db.Open();
+        using var tx = c.BeginTransaction();
+        var n = 0;
+        foreach (var i in items)
+        {
+            if (i.FoundAt == 0) i.FoundAt = Clock.Now();
+            n += c.Execute("""
+                INSERT OR IGNORE INTO discovery (bvid, title, uploader, uploader_mid, duration_sec, play_count, pubdate, cover_url, streamer, query, found_at)
+                VALUES (@Bvid, @Title, @Uploader, @UploaderMid, @DurationSec, @PlayCount, @Pubdate, @CoverUrl, @Streamer, @Query, @FoundAt)
+                """, i, tx);
+        }
+        tx.Commit();
+        return n;
+    }
+
+    public bool IsKnownDiscovery(string bvid)
+    {
+        using var c = Db.Open();
+        return c.ExecuteScalar<long>("SELECT COUNT(*) FROM discovery WHERE bvid = @bvid", new { bvid }) > 0;
+    }
+
+    /// <summary>可推荐的发现候选（state = new 且还不在曲库里）。</summary>
+    public IReadOnlyList<DiscoveryItem> GetDiscoveryCandidates(int limit = 500)
+    {
+        using var c = Db.Open();
+        return c.Query<DiscoveryItem>("""
+            SELECT d.* FROM discovery d
+            WHERE d.state = 'new' AND NOT EXISTS (SELECT 1 FROM videos v WHERE v.bvid = d.bvid)
+            ORDER BY d.found_at DESC LIMIT @limit
+            """, new { limit }).ToList();
+    }
+
+    public void SetDiscoveryState(string bvid, string state)
+    {
+        using var c = Db.Open();
+        c.Execute("UPDATE discovery SET state = @state, state_at = @now WHERE bvid = @bvid", new { bvid, state, now = Clock.Now() });
+    }
+
+    /// <summary>清理超过 days 天还没被推荐的候选（被拒绝的保留，避免再次入池）。</summary>
+    public int PruneDiscovery(int days)
+    {
+        using var c = Db.Open();
+        return c.Execute("DELETE FROM discovery WHERE state = 'new' AND found_at < @cut",
+            new { cut = Clock.Now() - days * 86400L });
+    }
+
+    public string? GetMeta(string key)
+    {
+        using var c = Db.Open();
+        return c.ExecuteScalar<string?>("SELECT value FROM meta WHERE key = @key", new { key });
+    }
+
+    public void SetMeta(string key, string? value)
+    {
+        using var c = Db.Open();
+        c.Execute("INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value", new { key, value });
     }
 
     public IReadOnlyList<long> RecentlyPlayed(int limit)

@@ -19,11 +19,12 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     readonly CachingStreamResolver _resolver;
     readonly AppSettings _settings;
     readonly Dispatcher _ui;
-    readonly IRecommender _recommender;
+    IRecommender _recommender;
     MpvPlayer? _mpv;
 
     int _generation;                 // 每次切歌 +1，用来丢弃过期的异步结果
-    long? _pendingRandomNext;        // Random 模式预先挑好的下一首
+    Task<Recommendation?>? _pendingPick;   // 推荐模式预先挑选（并导入）下一首的任务
+    string? _currentPicker;          // 当前曲目是谁选的：推荐器名 / manual / queue:模式
     bool _prefetched;
     int _consecutiveErrors;
     bool _retriedCurrent;
@@ -55,6 +56,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     [ObservableProperty] public partial StreamMode StreamMode { get; private set; }
     [ObservableProperty] public partial double Volume { get; set; }
     [ObservableProperty] public partial bool Normalize { get; set; }
+    /// <summary>当前曲目是推荐器选的时，显示推荐理由。</summary>
+    [ObservableProperty] public partial string? RecommendReason { get; private set; }
 
     /// <summary>当前曲目播放结束、切歌时触发（用于刷新播放次数）。</summary>
     public event Action? PlayRecorded;
@@ -65,7 +68,10 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         _resolver = resolver;
         _settings = settings;
         _ui = ui;
-        _recommender = RecommenderRegistry.CreateDefault();
+        RecommendOptions.Temperature = settings.RecommendTemperature;
+        RecommendOptions.DiscoveryRate = settings.DiscoveryRate;
+        RecommendFromLibrary = settings.RecommendFromLibrary;
+        _recommender = RecommenderRegistry.Create(settings.Recommender, repo, RecommendOptions);
         PlayMode = settings.PlayMode;
         StreamMode = settings.StreamMode;
         Volume = settings.Volume;
@@ -138,7 +144,7 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     partial void OnPlayModeChanged(PlayMode value)
     {
         Queue.Mode = value;
-        _pendingRandomNext = null;
+        _pendingPick = null;
         _prefetched = false;
         _settings.PlayMode = value;
     }
@@ -162,30 +168,37 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     {
         if (trackIds.Count == 0) return Task.CompletedTask;
         Queue.Load(trackIds, startId, context);
-        return Queue.Current is long id ? StartTrackAsync(id, userInitiated: true) : Task.CompletedTask;
+        return Queue.Current is long id ? StartTrackAsync(id, userInitiated: true, "manual", null) : Task.CompletedTask;
     }
 
     /// <summary>播放队列里（或追加进队列）的某一首。</summary>
     public Task PlayTrackAsync(long trackId)
     {
         Queue.Jump(trackId);
-        return StartTrackAsync(trackId, userInitiated: true);
+        return StartTrackAsync(trackId, userInitiated: true, "manual", null);
     }
 
     public async Task NextAsync(bool userInitiated = true)
     {
         long? next;
+        string picker;
+        string? reason = null;
         if (Queue.NeedsRecommender)
         {
-            next = _pendingRandomNext ?? await _recommender.NextAsync(BuildContext());
-            _pendingRandomNext = null;
+            var pending = _pendingPick;
+            _pendingPick = null;
+            var rec = pending is not null ? await pending : await PickAsync(foreground: true);
+            next = rec?.TrackId;
+            picker = rec?.Recommender ?? _recommender.Name;
+            reason = rec?.Reason;
             if (next is long n) Queue.Jump(n);
         }
         else
         {
             next = Queue.Next(auto: !userInitiated);
+            picker = $"queue:{PlayMode}";
         }
-        if (next is long id) await StartTrackAsync(id, userInitiated);
+        if (next is long id) await StartTrackAsync(id, userInitiated, picker, reason);
         else
         {
             FinishPlayEvent(userInitiated);
@@ -202,7 +215,76 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
             _mpv?.Seek(Current.StartSec ?? 0);
             return;
         }
-        if (Queue.Previous() is long id) await StartTrackAsync(id, userInitiated: true);
+        if (Queue.Previous() is long id) await StartTrackAsync(id, userInitiated: true, "manual", null);
+    }
+
+    // ---------------- 推荐 ----------------
+
+    /// <summary>导入 B 站发现池里的视频，返回要播放的曲目 id。由 App 提供（需要导入器）。</summary>
+    public Func<string, Task<long?>>? DiscoveryImporter { get; set; }
+
+    /// <summary>推荐范围：true = 整个曲库，false = 当前列表。</summary>
+    public bool RecommendFromLibrary { get; set; } = true;
+
+    public RecommendOptions RecommendOptions { get; } = new();
+
+    public void SetRecommender(string name)
+    {
+        _recommender = RecommenderRegistry.Create(name, _repo, RecommendOptions);
+        _pendingPick = null;
+        _prefetched = false;
+    }
+
+    /// <summary>给预览和调试用：用当前设置给候选打分。</summary>
+    public IReadOnlyList<ScoredCandidate> PreviewScores() =>
+        _recommender is WeightedRecommender w ? w.ScoreTracks(BuildContext()) : [];
+
+    /// <summary>让推荐器挑一首；挑中 B 站发现池里的视频时先导入，失败就换一首曲库里的。</summary>
+    async Task<Recommendation?> PickAsync(bool foreground)
+    {
+        var ctx = BuildContext();
+        Recommendation? rec;
+        try
+        {
+            rec = await Task.Run(() => _recommender.NextAsync(ctx));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("推荐器出错，改用纯随机：" + ex);
+            rec = await new RandomRecommender().NextAsync(ctx);
+        }
+        if (rec?.Discovery is { } d)
+        {
+            long? id = null;
+            if (DiscoveryImporter is not null)
+            {
+                try
+                {
+                    if (foreground) StatusText = "正在从 B 站导入新发现的切片…";
+                    id = await DiscoveryImporter(d.Bvid);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Write($"导入发现 {d.Bvid} 失败：{ex.Message}");
+                }
+                finally
+                {
+                    if (foreground) StatusText = null;
+                }
+            }
+            if (id is long tid)
+            {
+                AppLog.Write($"发现 {d.Bvid} → 曲目 {tid}：{rec.Reason}");
+                rec = rec with { TrackId = tid };
+            }
+            else
+            {
+                _repo.SetDiscoveryState(d.Bvid, "rejected");
+                rec = await Task.Run(() => _recommender.NextAsync(ctx with { AllowDiscovery = false }));
+            }
+        }
+        if (rec is not null) AppLog.Write($"推荐 {rec.Recommender} track={rec.TrackId} score={rec.Score:0.###} {rec.Reason}");
+        return rec;
     }
 
     public void TogglePause()
@@ -266,9 +348,11 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
 
     // ---------------- 内部 ----------------
 
-    async Task StartTrackAsync(long trackId, bool userInitiated)
+    async Task StartTrackAsync(long trackId, bool userInitiated, string picker, string? reason)
     {
         FinishPlayEvent(userInitiated);
+        _currentPicker = picker;
+        RecommendReason = reason;
         var gen = ++_generation;
         var track = _repo.GetTrack(trackId);
         if (track is null)
@@ -280,7 +364,7 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         Current = track;
         _settings.LastTrackId = trackId;
         _prefetched = false;
-        _pendingRandomNext = null;
+        _pendingPick = null;
         _retriedCurrent = false;
         _watchRecovered = false;
         Position = 0;
@@ -364,8 +448,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
             long? next;
             if (Queue.NeedsRecommender)
             {
-                _pendingRandomNext ??= await _recommender.NextAsync(BuildContext());
-                next = _pendingRandomNext;
+                _pendingPick ??= PickAsync(foreground: false);
+                next = (await _pendingPick)?.TrackId;
             }
             else next = Queue.PeekNext(auto: true);
             if (next is not long id || id == Current?.Id) return;
@@ -382,7 +466,9 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     {
         var recent = _repo.RecentlyPlayed(50).Reverse().ToList();
         recent.AddRange(Queue.History.TakeLast(50));
-        return new RecommendContext(Queue.Items, recent, Current?.Id);
+        var candidates = RecommendFromLibrary || Queue.Count == 0 ? _repo.GetVisibleTrackIds() : Queue.Items;
+        var discovery = RecommendFromLibrary && RecommendOptions.DiscoveryRate > 0 && DiscoveryImporter is not null;
+        return new RecommendContext(candidates, recent, Current?.Id, discovery);
     }
 
     void OnEndFile(MpvEndReason reason, string? error)
@@ -447,6 +533,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
                 Skipped = userInitiated && !completed && _playedSec < 30,
                 Mode = StreamMode == StreamMode.Audio ? "audio" : "video",
                 Context = Queue.Context,
+                Recommender = _currentPicker,
+                Reason = RecommendReason,
             });
         }
         catch

@@ -10,7 +10,7 @@ public enum PlayMode
     RepeatOne,
     /// <summary>洗牌：一轮内不重复，播完一轮重新洗。</summary>
     Shuffle,
-    /// <summary>随机：每次由推荐器从当前列表挑下一首。</summary>
+    /// <summary>智能推荐：每次由推荐器挑下一首（范围可以是整个曲库，甚至 B 站发现池）。</summary>
     Random,
 }
 
@@ -22,7 +22,7 @@ public static class PlayModeExtensions
         PlayMode.RepeatAll => "列表循环",
         PlayMode.RepeatOne => "单曲循环",
         PlayMode.Shuffle => "洗牌播放",
-        PlayMode.Random => "随机推荐",
+        PlayMode.Random => "智能推荐",
         _ => m.ToString(),
     };
 

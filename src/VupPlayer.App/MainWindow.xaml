@@ -282,6 +282,11 @@
                             <Run Text="  ·  切片 " />
                             <Run Text="{Binding Player.Current.UpName, Mode=OneWay, FallbackValue=''}" />
                         </TextBlock>
+                        <TextBlock Margin="0,4,0,0" FontSize="11" Foreground="{StaticResource AccentBrush}" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding Player.RecommendReason}"
+                                   Visibility="{Binding Player.RecommendReason, Converter={StaticResource BoolVis}}">
+                            <Run Text="&#xE945;" FontFamily="{StaticResource IconFont}" /><Run Text=" " /><Run Text="{Binding Player.RecommendReason, Mode=OneWay}" />
+                        </TextBlock>
                         <StackPanel x:Name="NowPlayingExtra">
                             <TextBlock Margin="0,4,0,0" Foreground="{StaticResource SubTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis"
                                        Text="{Binding Player.Current.VideoTitle}" Visibility="{Binding Player.Current.SongTitle, Converter={StaticResource BoolVis}}" />
@@ -384,7 +389,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="300" />
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="340" />
+                <ColumnDefinition Width="Auto" MinWidth="340" />
             </Grid.ColumnDefinitions>
 
             <!-- 左：当前曲目 -->

@@ -115,7 +115,7 @@ public sealed partial class MainViewModel : ObservableObject
         foreach (var t in _repo.ListTags().Where(x => x.Count > 0))
             NavItems.Add(new NavItem { Section = "标签", Kind = NavKind.Tag, Name = t.Name, Id = t.Id, Count = t.Count });
         foreach (var src in _repo.ListSources())
-            NavItems.Add(new NavItem { Section = "订阅源", Kind = NavKind.Source, Name = (src.Kind switch { "fav" => "收藏夹 · ", "season" => "合集 · ", "space" => "UP主 · ", _ => "" }) + (src.Title ?? src.RemoteId), Id = src.Id, Count = src.VideoCount });
+            NavItems.Add(new NavItem { Section = "订阅源", Kind = NavKind.Source, Name = (src.Kind switch { "fav" => "收藏夹 · ", "season" => "合集 · ", "space" => "UP主 · ", "discovery" => "✨ ", _ => "" }) + (src.Title ?? src.RemoteId), Id = src.Id, Count = src.VideoCount });
 
         RefreshNavCounts();
         var again = NavItems.FirstOrDefault(n => n.Kind == selectedKey.Item1 && n.Id == selectedKey.Item2) ?? NavItems[0];

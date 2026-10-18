@@ -91,6 +91,9 @@ public sealed class LibraryImporter(BiliApi api, YtDlp ytdlp, LibraryRepository 
                 return Run(ImportPagedAsync("season", source.RemoteId, p => api.GetSeasonPageAsync(ids[0], ids[1], p, ct), result, known, progress, ct, incremental: true));
             case "space":
                 return Run(ImportViaYtDlpAsync("space", source.RemoteId, $"https://space.bilibili.com/{source.RemoteId}/video", result, known, progress, ct));
+            case "discovery":
+                // 「B站发现」由推荐器自动导入，没有可同步的远端列表
+                return Task.FromResult(result);
             default:
                 return Run(ImportViaYtDlpAsync(source.Kind, source.RemoteId, source.RemoteId, result, known, progress, ct));
         }

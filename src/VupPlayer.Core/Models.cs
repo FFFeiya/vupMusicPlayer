@@ -105,6 +105,70 @@ public sealed class PlayEvent
     public bool Skipped { get; set; }
     public string? Mode { get; set; }
     public string? Context { get; set; }
+    /// <summary>谁选的这首：推荐器名，或 manual（手动点播）/ queue:模式（按队列顺序）。</summary>
+    public string? Recommender { get; set; }
+    public string? Reason { get; set; }
+}
+
+/// <summary>推荐器打分用的单曲特征（只含未隐藏的曲目）。</summary>
+public sealed class TrackFeatures
+{
+    public long Id { get; set; }
+    public string Bvid { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string? SongTitle { get; set; }
+    public long? StreamerId { get; set; }
+    public string? StreamerName { get; set; }
+    public long UpMid { get; set; }
+    public string UpName { get; set; } = "";
+    public bool Favorite { get; set; }
+    public long AddedAt { get; set; }
+    public string? Tags { get; set; }
+    /// <summary>播放次数（只算听了 3 秒以上的）。</summary>
+    public int Plays { get; set; }
+    /// <summary>评分之和：听完 +1，很快跳过 −1，其余按听的比例在 −1..1 之间。</summary>
+    public double RatingSum { get; set; }
+    public long? LastPlayedAt { get; set; }
+}
+
+/// <summary>最近的一次播放（用于连贯性、连续同主播判断）。</summary>
+public sealed class RecentPlay
+{
+    public long TrackId { get; set; }
+    public long? StreamerId { get; set; }
+    public string? SongTitle { get; set; }
+    public string? Tags { get; set; }
+    public bool Completed { get; set; }
+    public bool Skipped { get; set; }
+    public long StartedAt { get; set; }
+}
+
+/// <summary>B 站发现池里的一个候选。</summary>
+public sealed class DiscoveryItem
+{
+    public string Bvid { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string? Uploader { get; set; }
+    public long UploaderMid { get; set; }
+    public int DurationSec { get; set; }
+    public long PlayCount { get; set; }
+    public long Pubdate { get; set; }
+    public string? CoverUrl { get; set; }
+    public string? Streamer { get; set; }
+    public string? Query { get; set; }
+    public long FoundAt { get; set; }
+    public string State { get; set; } = "new";
+}
+
+public sealed class RecommenderStat
+{
+    public string Recommender { get; set; } = "";
+    public int Plays { get; set; }
+    public int Completed { get; set; }
+    public int Skipped { get; set; }
+    public double AvgPlayedSec { get; set; }
+    public double CompletionRate => Plays == 0 ? 0 : Math.Round((double)Completed / Plays, 3);
+    public double SkipRate => Plays == 0 ? 0 : Math.Round((double)Skipped / Plays, 3);
 }
 
 /// <summary>查询曲目的筛选条件。所有条件之间是 AND 关系。</summary>
