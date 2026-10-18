@@ -162,12 +162,19 @@
                         <TextBlock Text="{Binding ListSubtitle}" Foreground="{StaticResource SubTextBrush}" FontSize="12" Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
+                        <Button Style="{StaticResource FlatButton}" Margin="0,0,8,0" Command="{Binding ListActionCommand}"
+                                Visibility="{Binding ListActionText, Converter={StaticResource BoolVis}}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE72C;" FontFamily="{StaticResource IconFont}" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding ListActionText}" Margin="6,0,0,0" />
+                            </StackPanel>
+                        </Button>
                         <TextBox Style="{StaticResource DarkTextBox}" Width="200" Tag="搜索歌名、主播、UP 主、标签"
                                  Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=250}" />
                         <Button Style="{StaticResource AccentButton}" Margin="8,0,0,0" Command="{Binding PlayAllCommand}">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="&#xE768;" FontFamily="{StaticResource IconFont}" Foreground="White" VerticalAlignment="Center" />
-                                <TextBlock Text="播放全部" Foreground="White" Margin="6,0,0,0" />
+                                <TextBlock Text="{Binding PlayAllText}" Foreground="White" Margin="6,0,0,0" />
                             </StackPanel>
                         </Button>
                         <Button Style="{StaticResource FlatButton}" Margin="8,0,0,0" Command="{Binding ShuffleAllCommand}" ToolTip="洗牌播放">
@@ -202,6 +209,10 @@
                                             <TextBlock Text="{Binding DisplayTitle}" TextTrimming="CharacterEllipsis" FontSize="13.5" ToolTip="{Binding VideoTitle}" />
                                             <TextBlock Text="{Binding VideoTitle}" TextTrimming="CharacterEllipsis" FontSize="11" Foreground="{StaticResource SubTextBrush}"
                                                        Visibility="{Binding SongTitle, Converter={StaticResource BoolVis}}" Margin="0,2,0,0" />
+                                            <TextBlock TextTrimming="CharacterEllipsis" FontSize="11" Foreground="{StaticResource AccentBrush}" Margin="0,2,0,0"
+                                                       Visibility="{Binding Reason, Converter={StaticResource BoolVis}}">
+                                                <Run Text="&#xE945;" FontFamily="{StaticResource IconFont}" /><Run Text=" " /><Run Text="{Binding Reason, Mode=OneWay}" />
+                                            </TextBlock>
                                         </StackPanel>
                                     </DataTemplate>
                                 </GridViewColumn.CellTemplate>

@@ -60,6 +60,13 @@ public sealed class TrackView
     public long? LastPlayedAt { get; set; }
     public string? Tags { get; set; }   // 逗号分隔
 
+    /// <summary>推荐歌单里显示的推荐理由（不来自数据库）。</summary>
+    public string? Reason { get; set; }
+
+    /// <summary>「B站新发现」里还没导入的视频：只有 BV 号，Id 为负数。</summary>
+    public string? DiscoveryBvid { get; set; }
+    public bool IsDiscovery => DiscoveryBvid is not null;
+
     /// <summary>界面上显示的主标题：有歌名用歌名，否则用视频标题（多P时附分P标题）。</summary>
     public string DisplayTitle =>
         !string.IsNullOrWhiteSpace(SongTitle) ? SongTitle! :

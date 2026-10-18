@@ -52,7 +52,7 @@ public partial class App : Application
         base.OnStartup(e);
 
         // 单实例：已经在运行时，把参数交给它，然后退出
-        _singleInstance = new Mutex(true, "VupPlayer.SingleInstance", out var first);
+        _singleInstance = new Mutex(true, AppPaths.InstanceMutexName, out var first);
         if (!first)
         {
             var args = new JsonObject();
@@ -89,6 +89,7 @@ public partial class App : Application
         Discovery = new DiscoveryService(Api, Repo);
         Player.DiscoveryImporter = ImportDiscoveryAsync;
         ViewModel = new MainViewModel(Repo, Api, Importer, Player);
+        ViewModel.DiscoveryRefresher = () => RefreshDiscoveryAsync(force: true);
         Shell = new MainWindow(ViewModel, Settings, this);
         MainWindow = Shell;
         if (DevMode)
@@ -416,6 +417,25 @@ public partial class App : Application
                 var start = a["start_id"]?.GetValue<long>();
                 if (a["mode"]?.GetValue<string>() is string m && Enum.TryParse<PlayMode>(m, true, out var pm)) Player.PlayMode = pm;
                 await Player.PlayListAsync(ids, start, a["context"]?.GetValue<string>() ?? "Claude");
+                ViewModel.NotifyModeChanged();
+                return Ok(NowPlaying());
+            }
+
+            case "play_mix":
+            {
+                var kind = a["kind"]?.GetValue<string>()?.ToLowerInvariant() ?? "daily";
+                if (kind == "radio")
+                {
+                    await Player.StartRadioAsync();
+                    return Ok(NowPlaying());
+                }
+                var mix = new Core.Recommend.DailyMix(Repo);
+                var items = kind switch { "rediscover" => mix.Rediscover(), "fresh" => mix.Fresh(), _ => mix.GetDaily() };
+                if (items.Count == 0) return Fail("这个推荐歌单现在是空的");
+                var name = kind switch { "rediscover" => "好久不见", "fresh" => "新歌速递", _ => "每日推荐" };
+                var picker = kind switch { "rediscover" => "rediscover", "fresh" => "fresh", _ => "daily" };
+                await Player.PlayListAsync(items.Select(i => i.TrackId).ToList(), null, "推荐：" + name, picker,
+                    items.ToDictionary(i => i.TrackId, i => i.Reason));
                 ViewModel.NotifyModeChanged();
                 return Ok(NowPlaying());
             }

@@ -9,6 +9,13 @@ if (-not (Test-Path (Join-Path $root 'tools\libmpv-2.dll')) -or -not (Test-Path 
     & (Join-Path $PSScriptRoot 'fetch-deps.ps1')
 }
 
+# 播放器正在从发布目录运行时不能覆盖
+$running = Get-Process -Name VupPlayer, VupPlayer.Mcp -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($out, [StringComparison]::OrdinalIgnoreCase) }
+if ($running) {
+    throw "播放器（或 MCP 服务）正在从 $out 运行，请先退出播放器（托盘右键 → 退出）再打包。"
+}
+
 if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 
 dotnet publish (Join-Path $root 'src\VupPlayer.App\VupPlayer.App.csproj') -c Release -r win-x64 --self-contained false -o $out -p:DebugType=none

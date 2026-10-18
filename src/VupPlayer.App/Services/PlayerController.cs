@@ -25,6 +25,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     int _generation;                 // 每次切歌 +1，用来丢弃过期的异步结果
     Task<Recommendation?>? _pendingPick;   // 推荐模式预先挑选（并导入）下一首的任务
     string? _currentPicker;          // 当前曲目是谁选的：推荐器名 / manual / queue:模式
+    string? _queuePicker;            // 当前队列来自推荐歌单时：daily / rediscover / fresh
+    IReadOnlyDictionary<long, string>? _queueReasons;
     bool _prefetched;
     int _consecutiveErrors;
     bool _retriedCurrent;
@@ -164,18 +166,48 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     // ---------------- 播放入口 ----------------
 
     /// <summary>用一个列表替换队列并从 startId 开始播放。</summary>
-    public Task PlayListAsync(IReadOnlyList<long> trackIds, long? startId, string context)
+    /// <param name="picker">推荐歌单（daily / rediscover / fresh）播放时传入，写进播放记录，便于统计效果。</param>
+    /// <param name="reasons">推荐歌单里每首的推荐理由，播放时显示。</param>
+    public Task PlayListAsync(IReadOnlyList<long> trackIds, long? startId, string context,
+        string? picker = null, IReadOnlyDictionary<long, string>? reasons = null)
     {
         if (trackIds.Count == 0) return Task.CompletedTask;
+        // 推荐歌单要按歌单放；智能推荐模式会无视队列，所以切成列表循环
+        if (picker is not null && PlayMode == PlayMode.Random) PlayMode = PlayMode.RepeatAll;
+        _queuePicker = picker;
+        _queueReasons = reasons;
         Queue.Load(trackIds, startId, context);
-        return Queue.Current is long id ? StartTrackAsync(id, userInitiated: true, "manual", null) : Task.CompletedTask;
+        return Queue.Current is long id
+            ? StartTrackAsync(id, userInitiated: true, picker ?? "manual", reasons?.GetValueOrDefault(id))
+            : Task.CompletedTask;
+    }
+
+    /// <summary>私人电台：切到智能推荐模式开始播放。firstTrackId 不为空时先放这首。</summary>
+    public async Task StartRadioAsync(long? firstTrackId = null)
+    {
+        _queuePicker = null;
+        _queueReasons = null;
+        PlayMode = PlayMode.Random;
+        Queue.Load(firstTrackId is long f ? [f] : [], firstTrackId, "私人电台");
+        if (firstTrackId is long first)
+        {
+            await StartTrackAsync(first, userInitiated: true, "manual", null);
+            return;
+        }
+        var rec = await PickAsync(foreground: true);
+        if (rec?.TrackId is long id)
+        {
+            Queue.Jump(id);
+            await StartTrackAsync(id, userInitiated: true, rec.Recommender, rec.Reason);
+        }
+        else StatusText = "曲库是空的，先导入一些切片吧";
     }
 
     /// <summary>播放队列里（或追加进队列）的某一首。</summary>
     public Task PlayTrackAsync(long trackId)
     {
         Queue.Jump(trackId);
-        return StartTrackAsync(trackId, userInitiated: true, "manual", null);
+        return StartTrackAsync(trackId, userInitiated: true, "manual", _queueReasons?.GetValueOrDefault(trackId));
     }
 
     public async Task NextAsync(bool userInitiated = true)
@@ -196,7 +228,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         else
         {
             next = Queue.Next(auto: !userInitiated);
-            picker = $"queue:{PlayMode}";
+            picker = _queuePicker ?? $"queue:{PlayMode}";
+            if (next is long nid) reason = _queueReasons?.GetValueOrDefault(nid);
         }
         if (next is long id) await StartTrackAsync(id, userInitiated, picker, reason);
         else

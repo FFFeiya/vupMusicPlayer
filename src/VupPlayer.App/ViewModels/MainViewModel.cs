@@ -10,7 +10,12 @@ using VupPlayer.Core.Streams;
 
 namespace VupPlayer.App.ViewModels;
 
-public enum NavKind { All, Favorites, Untagged, Recent, Playlist, Streamer, Uploader, Tag, Source, Suggestions }
+public enum NavKind
+{
+    All, Favorites, Untagged, Recent, Playlist, Streamer, Uploader, Tag, Source, Suggestions,
+    // 推荐专区
+    Daily, Radio, Discovery, Rediscover, Fresh,
+}
 
 public sealed partial class NavItem : ObservableObject
 {
@@ -23,7 +28,10 @@ public sealed partial class NavItem : ObservableObject
     {
         NavKind.All => "", NavKind.Favorites => "", NavKind.Untagged => "", NavKind.Recent => "",
         NavKind.Playlist => "", NavKind.Streamer => "", NavKind.Uploader => "", NavKind.Tag => "",
-        NavKind.Source => "", NavKind.Suggestions => "", _ => "",
+        NavKind.Source => "", NavKind.Suggestions => "",
+        NavKind.Daily => "", NavKind.Radio => "", NavKind.Discovery => "", NavKind.Rediscover => "",
+        NavKind.Fresh => "",
+        _ => "",
     };
 }
 
@@ -50,6 +58,12 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] public partial bool IsLoggedIn { get; set; }
     [ObservableProperty] public partial string ListTitle { get; set; } = "全部曲目";
     [ObservableProperty] public partial string? ListSubtitle { get; set; }
+    /// <summary>列表右上角的附加操作（每日推荐「换一批」、B站新发现「去找新切片」），为空时隐藏。</summary>
+    [ObservableProperty] public partial string? ListActionText { get; set; }
+
+    readonly Core.Recommend.DailyMix _mix;
+    /// <summary>刷新 B 站发现池，由 App 提供。</summary>
+    public Func<Task<DiscoveryRefreshResult?>>? DiscoveryRefresher { get; set; }
 
     // ---------------- 挂件模式的小搜索 ----------------
 
@@ -77,6 +91,7 @@ public sealed partial class MainViewModel : ObservableObject
         _repo = repo;
         _api = api;
         _importer = importer;
+        _mix = new Core.Recommend.DailyMix(repo);
         Player = player;
         Player.Queue.Changed += () => Application.Current.Dispatcher.BeginInvoke(RefreshUpcoming);
         Player.PlayRecorded += () => Application.Current.Dispatcher.BeginInvoke(RefreshNavCounts);
@@ -95,6 +110,11 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var selectedKey = SelectedNav is { } s ? (s.Kind, s.Id) : (NavKind.All, (long?)null);
         NavItems.Clear();
+        NavItems.Add(new NavItem { Section = "推荐", Kind = NavKind.Daily, Name = "每日推荐" });
+        NavItems.Add(new NavItem { Section = "推荐", Kind = NavKind.Radio, Name = "私人电台" });
+        NavItems.Add(new NavItem { Section = "推荐", Kind = NavKind.Discovery, Name = "B站新发现" });
+        NavItems.Add(new NavItem { Section = "推荐", Kind = NavKind.Rediscover, Name = "好久不见" });
+        NavItems.Add(new NavItem { Section = "推荐", Kind = NavKind.Fresh, Name = "新歌速递" });
         NavItems.Add(new NavItem { Section = "资料库", Kind = NavKind.All, Name = "全部曲目" });
         NavItems.Add(new NavItem { Section = "资料库", Kind = NavKind.Favorites, Name = "我喜欢" });
         NavItems.Add(new NavItem { Section = "资料库", Kind = NavKind.Recent, Name = "最常播放" });
@@ -133,9 +153,24 @@ public sealed partial class MainViewModel : ObservableObject
                 NavKind.Favorites => _repo.CountTracks(new TrackQuery { Favorite = true }),
                 NavKind.Untagged => CountUntagged(),
                 NavKind.Recent => _repo.GetPlayStats(null, 100).Count,
+                NavKind.Daily => SafeCount(() => _mix.GetDaily().Count),
+                NavKind.Radio => SafeCount(() =>
+                {
+                    using var c = _repo.Db.Open();
+                    return Dapper.SqlMapper.ExecuteScalar<int>(c,
+                        "SELECT COUNT(DISTINCT track_id) FROM play_events WHERE recommender LIKE 'weighted%' OR recommender = 'random'");
+                }),
+                NavKind.Discovery => _repo.GetDiscoveryCandidates().Count,
+                NavKind.Rediscover => SafeCount(() => _mix.Rediscover().Count),
+                NavKind.Fresh => SafeCount(() => _mix.Fresh().Count),
                 _ => n.Count,
             };
         }
+    }
+
+    static int SafeCount(Func<int> f)
+    {
+        try { return f(); } catch { return 0; }
     }
 
     int CountUntagged() =>
@@ -152,6 +187,15 @@ public sealed partial class MainViewModel : ObservableObject
         IReadOnlyList<TrackView> list;
         ListTitle = nav?.Name ?? "全部曲目";
         ListSubtitle = null;
+        ListActionText = null;
+        OnPropertyChanged(nameof(PlayAllText));
+        if (nav?.Kind is NavKind.Daily or NavKind.Radio or NavKind.Discovery or NavKind.Rediscover or NavKind.Fresh)
+        {
+            var rec = RecommendList(nav.Kind);
+            Tracks.Clear();
+            foreach (var t in rec.Where(t => Matches(t, q.Keyword))) Tracks.Add(t);
+            return;
+        }
         switch (nav?.Kind)
         {
             case NavKind.Favorites: q.Favorite = true; break;
@@ -195,6 +239,135 @@ public sealed partial class MainViewModel : ObservableObject
         ListSubtitle ??= $"{Tracks.Count} 首";
     }
 
+    /// <summary>推荐专区的列表。会顺带设置副标题和右上角的附加操作。</summary>
+    IReadOnlyList<TrackView> RecommendList(NavKind kind)
+    {
+        IReadOnlyList<TrackView> WithReasons(IReadOnlyList<Core.Recommend.MixItem> items)
+        {
+            var reasons = items.ToDictionary(i => i.TrackId, i => i.Reason);
+            var list = _repo.GetTracks(items.Select(i => i.TrackId)).ToList();
+            foreach (var t in list) t.Reason = reasons[t.Id];
+            return list;
+        }
+
+        switch (kind)
+        {
+            case NavKind.Daily:
+            {
+                var list = WithReasons(_mix.GetDaily());
+                ListSubtitle = list.Count == 0
+                    ? "曲库还是空的，先导入一些切片吧"
+                    : $"{DateTime.Now:M 月 d 日} · 根据你的播放记录生成，每天更新 · {list.Count} 首";
+                ListActionText = list.Count > 0 ? "换一批" : null;
+                return list;
+            }
+            case NavKind.Radio:
+            {
+                // 私人电台：展示电台最近放过的歌；点「播放全部」开始
+                using var c = _repo.Db.Open();
+                var radioIds = Dapper.SqlMapper.Query<long>(c, """
+                    SELECT track_id FROM play_events WHERE recommender LIKE 'weighted%' OR recommender = 'random'
+                    GROUP BY track_id ORDER BY MAX(started_at) DESC LIMIT 50
+                    """).ToList();
+                var list = _repo.GetTracks(radioIds).ToList();
+                ListSubtitle = "一首接一首地智能推荐，范围是整个曲库，还会按比例推 B 站上的新切片。点「播放全部」开始收听"
+                               + (list.Count > 0 ? "（下面是电台最近放过的）" : "");
+                return list;
+            }
+            case NavKind.Discovery:
+            {
+                var items = _repo.GetDiscoveryCandidates(200);
+                var list = items.Select((d, i) => new TrackView
+                {
+                    Id = -(i + 1), Bvid = d.Bvid, DiscoveryBvid = d.Bvid, VideoTitle = d.Title, StreamerName = d.Streamer,
+                    UpName = d.Uploader ?? "", UpMid = d.UploaderMid, DurationSec = d.DurationSec, CoverUrl = d.CoverUrl, PageCount = 1,
+                    Reason = d.PlayCount > 0 ? $"按你常听的 {d.Streamer} 找到 · 播放 {FormatCount(d.PlayCount)}" : $"按你常听的 {d.Streamer} 找到",
+                }).ToList();
+                ListSubtitle = list.Count == 0
+                    ? "发现池是空的。点右上角「去 B 站找新切片」，会按你常听的主播去搜"
+                    : $"还没导入的切片 · 双击导入并播放，右键可以「不感兴趣」 · {list.Count} 个";
+                ListActionText = "去 B 站找新切片";
+                return list;
+            }
+            case NavKind.Rediscover:
+            {
+                var list = WithReasons(_mix.Rediscover());
+                ListSubtitle = list.Count == 0 ? "以前常听、最近没听的歌会出现在这里（需要积累一些播放记录）" : $"以前常听、最近没听 · {list.Count} 首";
+                return list;
+            }
+            default:
+            {
+                var list = WithReasons(_mix.Fresh());
+                ListSubtitle = list.Count == 0 ? "最近两周没有新导入的曲目" : $"最近两周导入、还没听过 · {list.Count} 首";
+                return list;
+            }
+        }
+    }
+
+    static string FormatCount(long n) => n >= 10000 ? $"{n / 10000.0:0.#} 万" : n.ToString();
+
+    public bool IsDiscoveryList => SelectedNav?.Kind == NavKind.Discovery;
+
+    /// <summary>「播放全部」按钮在不同页面的说法。</summary>
+    public string PlayAllText => SelectedNav?.Kind switch
+    {
+        NavKind.Radio => "开始收听",
+        NavKind.Discovery => "导入并播放",
+        _ => "播放全部",
+    };
+
+    [RelayCommand]
+    async Task ListAction()
+    {
+        switch (SelectedNav?.Kind)
+        {
+            case NavKind.Daily:
+                _mix.Refresh();
+                RefreshTracks();
+                RefreshNavCounts();
+                ImportStatus = "每日推荐已换一批";
+                break;
+            case NavKind.Discovery when DiscoveryRefresher is not null:
+                ImportStatus = "正在按常听的主播去 B 站找新切片…";
+                var r = await DiscoveryRefresher();
+                ImportStatus = r is null ? "发现池正在刷新中"
+                    : r.Error is not null && r.Added == 0 ? "刷新失败：" + r.Error
+                    : $"新发现 {r.Added} 个切片";
+                RefreshTracks();
+                RefreshNavCounts();
+                break;
+        }
+    }
+
+    /// <summary>导入「B站新发现」里的视频并播放。</summary>
+    public async Task ImportAndPlayDiscoveryAsync(TrackView item, bool play = true)
+    {
+        if (item.DiscoveryBvid is not string bvid || Player.DiscoveryImporter is null) return;
+        ImportStatus = $"正在导入：{item.VideoTitle}";
+        try
+        {
+            var id = await Player.DiscoveryImporter(bvid);
+            if (id is long tid)
+            {
+                if (play) await Player.PlayTrackAsync(tid);
+                ImportStatus = play ? null : "已导入曲库";
+            }
+            else ImportStatus = "导入失败";
+        }
+        catch (Exception ex)
+        {
+            ImportStatus = "导入失败：" + ex.Message;
+        }
+        RefreshTracks();
+    }
+
+    public void RejectDiscovery(IEnumerable<TrackView> items)
+    {
+        foreach (var i in items) if (i.DiscoveryBvid is string b) _repo.SetDiscoveryState(b, "rejected");
+        RefreshTracks();
+        RefreshNavCounts();
+    }
+
     static bool Matches(TrackView t, string? kw) =>
         string.IsNullOrWhiteSpace(kw) ||
         $"{t.VideoTitle} {t.PartTitle} {t.SongTitle} {t.StreamerName} {t.UpName} {t.Tags}".Contains(kw, StringComparison.OrdinalIgnoreCase);
@@ -217,9 +390,33 @@ public sealed partial class MainViewModel : ObservableObject
 
     public async Task PlayFromListAsync(TrackView? start)
     {
-        var ids = Tracks.Select(t => t.Id).ToList();
-        if (ids.Count == 0) return;
-        await Player.PlayListAsync(ids, start?.Id, SelectedNav?.Name ?? "全部曲目");
+        switch (SelectedNav?.Kind)
+        {
+            case NavKind.Radio:
+                // 私人电台：点哪首都从电台开始（点了具体某首就先放它）
+                await Player.StartRadioAsync(start?.Id);
+                break;
+            case NavKind.Discovery:
+                var item = start ?? Tracks.FirstOrDefault();
+                if (item is not null) await ImportAndPlayDiscoveryAsync(item);
+                break;
+            case NavKind.Daily or NavKind.Rediscover or NavKind.Fresh:
+            {
+                var ids = Tracks.Select(t => t.Id).ToList();
+                if (ids.Count == 0) return;
+                var picker = SelectedNav.Kind switch { NavKind.Daily => "daily", NavKind.Rediscover => "rediscover", _ => "fresh" };
+                var reasons = Tracks.Where(t => t.Reason is not null).ToDictionary(t => t.Id, t => t.Reason!);
+                await Player.PlayListAsync(ids, start?.Id, "推荐：" + SelectedNav.Name, picker, reasons);
+                break;
+            }
+            default:
+            {
+                var ids = Tracks.Select(t => t.Id).ToList();
+                if (ids.Count == 0) return;
+                await Player.PlayListAsync(ids, start?.Id, SelectedNav?.Name ?? "全部曲目");
+                break;
+            }
+        }
         RefreshUpcoming();
         OnPropertyChanged(nameof(UpcomingTitle));
     }

@@ -458,6 +458,20 @@ public partial class MainWindow : Window
         menu.Items.Clear();
         if (sel.Count == 0) { e.Handled = true; return; }
 
+        // 「B站新发现」里的条目还没导入，菜单不一样
+        if (sel.All(t => t.IsDiscovery))
+        {
+            Add(menu, "导入并播放", async () => await _vm.ImportAndPlayDiscoveryAsync(sel[0]));
+            Add(menu, sel.Count > 1 ? $"导入到曲库（{sel.Count} 个）" : "导入到曲库", async () =>
+            {
+                foreach (var t in sel) await _vm.ImportAndPlayDiscoveryAsync(t, play: false);
+            });
+            Add(menu, "不感兴趣", () => _vm.RejectDiscovery(sel));
+            menu.Items.Add(new Separator());
+            Add(menu, "在 B 站打开", () => Process.Start(new ProcessStartInfo($"https://www.bilibili.com/video/{sel[0].DiscoveryBvid}") { UseShellExecute = true }));
+            return;
+        }
+
         Add(menu, "播放", async () => await _vm.PlayFromListAsync(sel[0]));
         Add(menu, "下一首播放", () => _vm.PlayNext(sel));
         Add(menu, "加入播放队列", () => _vm.Enqueue(sel));

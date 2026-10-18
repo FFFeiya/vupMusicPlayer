@@ -38,6 +38,37 @@ public sealed class RecommendTools(LibraryRepository repo)
         });
     }
 
+    [McpServerTool(Name = "get_recommendations", ReadOnly = false)]
+    [Description("""
+        查看推荐专区的歌单（和播放器左侧「推荐」栏目是同一份）：
+        daily = 每日推荐（每天 30 首，当天固定，refresh=true 换一批）；rediscover = 好久不见；fresh = 新歌速递。
+        """)]
+    public string GetRecommendations([Description("daily / rediscover / fresh")] string kind = "daily", bool refresh = false)
+    {
+        var mix = new DailyMix(repo);
+        var items = kind.ToLowerInvariant() switch
+        {
+            "rediscover" => mix.Rediscover(),
+            "fresh" => mix.Fresh(),
+            _ => refresh ? mix.Refresh() : mix.GetDaily(),
+        };
+        var tracks = repo.GetTracks(items.Select(i => i.TrackId)).ToDictionary(t => t.Id);
+        return LibraryTools.Out(items.Where(i => tracks.ContainsKey(i.TrackId)).Select(i => new
+        {
+            track_id = i.TrackId, title = tracks[i.TrackId].DisplayTitle, streamer = tracks[i.TrackId].StreamerName, reason = i.Reason,
+        }));
+    }
+
+    [McpServerTool(Name = "play_recommendations")]
+    [Description("在播放器里播放推荐：daily 每日推荐 / rediscover 好久不见 / fresh 新歌速递 / radio 私人电台（智能推荐一首接一首）。需要播放器在运行。")]
+    public async Task<string> PlayRecommendations([Description("daily / rediscover / fresh / radio")] string kind = "daily")
+    {
+        var resp = await VupPlayer.Core.Control.ControlClient.SendAsync("play_mix",
+            new System.Text.Json.Nodes.JsonObject { ["kind"] = kind }, 10000);
+        if (resp is null) return LibraryTools.Out(new { ok = false, error = "播放器没有运行。请先打开 VupPlayer。" });
+        return resp.Ok ? resp.Data?.ToJsonString() ?? "{}" : LibraryTools.Out(new { ok = false, error = resp.Error });
+    }
+
     [McpServerTool(Name = "get_recommender_stats", ReadOnly = true)]
     [Description("""
         按「谁选的这首」统计播放效果：weighted-v1 / random 是推荐器，manual 是手动点播，queue:* 是按队列顺序。
