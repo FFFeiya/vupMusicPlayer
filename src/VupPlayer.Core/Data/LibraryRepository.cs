@@ -146,6 +146,21 @@ public sealed class LibraryRepository(Database db)
         c.Execute("UPDATE videos SET status = @status WHERE bvid = @bvid", new { bvid, status });
     }
 
+    /// <summary>某个视频的全部曲目（按分P顺序）。</summary>
+    public IReadOnlyList<TrackView> GetTracksByBvid(string bvid, bool includeHidden = false)
+    {
+        using var c = Db.Open();
+        return c.Query<TrackView>(TrackViewSelect + " WHERE t.bvid = @bvid AND (@includeHidden OR t.hidden = 0) ORDER BY t.page, t.start_sec",
+            new { bvid, includeHidden }).ToList();
+    }
+
+    /// <summary>曲库里出现过的切片 UP 主 mid。</summary>
+    public IReadOnlySet<long> GetUploaderMids()
+    {
+        using var c = Db.Open();
+        return c.Query<long>("SELECT DISTINCT up_mid FROM videos").ToHashSet();
+    }
+
     public TrackView? GetTrack(long id)
     {
         using var c = Db.Open();

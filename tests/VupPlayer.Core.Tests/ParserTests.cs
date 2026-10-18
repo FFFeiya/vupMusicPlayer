@@ -127,6 +127,22 @@ public class LinkParserTests
         Assert.Equal(3, LinkParser.SplitInputs("BV1NsnM6DEz5\nBV1WwJy6EEMg，BV1XJJ96oEXg").Count);
 }
 
+public class SearchParsingTests
+{
+    [Theory]
+    [InlineData("4:6", 246)]
+    [InlineData("12:34", 754)]
+    [InlineData("1:02:03", 3723)]
+    [InlineData("", 0)]
+    [InlineData("abc", 0)]
+    public void ParseDuration(string s, int expected) => Assert.Equal(expected, BiliApi.ParseDuration(s));
+
+    [Fact]
+    public void CleanHtml_RemovesHighlightAndEntities() =>
+        Assert.Equal("【阿梓】《绝不认输》 & 合集",
+            BiliApi.CleanHtml("【<em class=\"keyword\">阿梓</em>】《<em class=\"keyword\">绝不认输</em>》 &amp; 合集"));
+}
+
 public class WbiSignerTests
 {
     // 社区文档里的公开示例

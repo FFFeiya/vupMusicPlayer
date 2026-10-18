@@ -361,6 +361,20 @@ public partial class App : Application
                 return Ok(NowPlaying());
             }
 
+            case "play_now":
+            {
+                // 插到当前曲目之后并立刻播放第一首，不打乱原来的队列
+                var ids = Ids(a["track_ids"]);
+                if (ids.Count == 0) return Fail("track_ids 为空");
+                if (Player.Queue.Count == 0) await Player.PlayListAsync(ids, ids[0], "Claude");
+                else
+                {
+                    Player.Queue.PlayNext(ids);
+                    await Player.PlayTrackAsync(ids[0]);
+                }
+                return Ok(NowPlaying());
+            }
+
             case "enqueue":
             {
                 var ids = Ids(a["track_ids"]);

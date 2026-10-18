@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\VupPlayer.Core\VupPlayer.Core.csproj" />
+    <ProjectReference Include="..\VupPlayer.Bilibili\VupPlayer.Bilibili.csproj" />
   </ItemGroup>
 
   <ItemGroup>

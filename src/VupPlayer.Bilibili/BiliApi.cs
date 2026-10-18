@@ -27,6 +27,12 @@ public sealed record ListItem(string Bvid, string Title, string? Cover, string? 
 
 public sealed record ListPage(string? Title, int Total, IReadOnlyList<ListItem> Items, bool HasMore);
 
+/// <summary>B 站视频搜索结果的一项。</summary>
+public sealed record SearchItem(string Bvid, string Title, string Uploader, long UploaderMid, int DurationSec,
+    long PlayCount, long Pubdate, string? Cover, string? Description);
+
+public sealed record SearchPage(int Total, int Page, IReadOnlyList<SearchItem> Items);
+
 public sealed record DashStream(int Id, string Url, IReadOnlyList<string> BackupUrls, long Bandwidth, string Codecs, int Width, int Height, int CodecId);
 
 public sealed record PlayUrlInfo(IReadOnlyList<DashStream> Videos, IReadOnlyList<DashStream> Audios, string? MuxedUrl, string? QualityDesc);
@@ -312,6 +318,62 @@ public sealed class BiliApi : IDisposable
         var total = d["page"]?["total"]?.GetValue<int>() ?? items.Count;
         return new ListPage(d["meta"]?["name"]?.GetValue<string>(), total, items, page * 30 < total);
     }
+
+    // ---------------- 搜索 ----------------
+
+    /// <summary>
+    /// 搜索视频。order：totalrank（综合）/ click（播放多）/ pubdate（最新）/ dm（弹幕多）/ stow（收藏多）。
+    /// </summary>
+    public async Task<SearchPage> SearchVideosAsync(string keyword, int page = 1, string order = "totalrank", CancellationToken ct = default)
+    {
+        var node = await GetWbiAsync("https://api.bilibili.com/x/web-interface/wbi/search/type",
+        [
+            P("search_type", "video"), P("keyword", keyword), P("page", page), P("order", order),
+        ], ct).ConfigureAwait(false);
+        var d = node["data"];
+        var items = new List<SearchItem>();
+        foreach (var r in d?["result"]?.AsArray() ?? [])
+        {
+            if (r is null || r["type"]?.GetValue<string>() is string t && t != "video") continue;
+            var bvid = r["bvid"]?.GetValue<string>();
+            if (string.IsNullOrEmpty(bvid)) continue;
+            items.Add(new SearchItem(
+                bvid,
+                CleanHtml(r["title"]?.GetValue<string>() ?? ""),
+                r["author"]?.GetValue<string>() ?? "",
+                ReadLong(r["mid"]),
+                ParseDuration(r["duration"]?.ToString()),
+                ReadLong(r["play"]),
+                ReadLong(r["pubdate"]),
+                NormalizeUrl(r["pic"]?.GetValue<string>()),
+                r["description"]?.GetValue<string>()));
+        }
+        return new SearchPage(d?["numResults"]?.GetValue<int>() ?? items.Count, page, items);
+    }
+
+    /// <summary>搜索结果的标题带 &lt;em class="keyword"&gt; 高亮和 HTML 实体，去掉。</summary>
+    internal static string CleanHtml(string s) =>
+        System.Net.WebUtility.HtmlDecode(System.Text.RegularExpressions.Regex.Replace(s, "<[^>]+>", "")).Trim();
+
+    /// <summary>「4:6」「12:34」「1:02:03」→ 秒。</summary>
+    internal static int ParseDuration(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return 0;
+        var total = 0;
+        foreach (var part in s.Split(':'))
+        {
+            if (!int.TryParse(part, out var v)) return 0;
+            total = total * 60 + v;
+        }
+        return total;
+    }
+
+    /// <summary>有些字段有时是数字有时是字符串（例如播放量「--」）。</summary>
+    static long ReadLong(JsonNode? n) =>
+        n is null ? 0 : long.TryParse(n.ToString(), out var v) ? v : 0;
+
+    static string? NormalizeUrl(string? url) =>
+        url is null ? null : url.StartsWith("//") ? "https:" + url : url;
 
     // ---------------- 短链 ----------------
 

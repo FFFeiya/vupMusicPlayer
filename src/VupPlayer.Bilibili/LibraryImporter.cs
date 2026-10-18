@@ -16,6 +16,8 @@ public sealed class ImportResult
     public long? SourceId { get; set; }
     public string? SourceTitle { get; set; }
     public List<long> NewTrackIds { get; } = [];
+    /// <summary>本次写入（新建或更新）过的视频。</summary>
+    public List<string> Bvids { get; } = [];
 
     public string Summary =>
         $"新增 {VideosAdded} 个视频 / {TracksAdded} 首曲目" +
@@ -201,6 +203,7 @@ public sealed class LibraryImporter(BiliApi api, YtDlp ytdlp, LibraryRepository 
             return (song, streamer);
         });
         if (isNew) result.VideosAdded++;
+        if (!result.Bvids.Contains(v.Bvid)) result.Bvids.Add(v.Bvid);
         result.TracksAdded += created.Count;
         result.NewTrackIds.AddRange(created);
     }

@@ -287,8 +287,4 @@ public sealed class PlayerTools
     public Task<string> ViewMode([Description("full / widget / mini")] string mode) =>
         SendAsync("view_mode", new JsonObject { ["mode"] = mode });
 
-    [McpServerTool(Name = "import_from_bilibili")]
-    [Description("让播放器导入 B 站内容：BV 号、视频链接、收藏夹、合集或 UP 主空间链接。使用播放器里的登录状态。")]
-    public Task<string> ImportFromBilibili(string input) =>
-        SendAsync("import", new JsonObject { ["input"] = input }, timeoutMs: 600_000);
 }
