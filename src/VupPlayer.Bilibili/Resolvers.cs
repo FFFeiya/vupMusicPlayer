@@ -20,10 +20,13 @@ public sealed class StreamPreferences
     /// 可以互换的国内镜像。B 站 upos 地址的签名和服务器无关，换服务器名就能用；
     /// akamaized 等海外地址的签名格式不同，不能替换。
     /// </summary>
+    /// <summary>
+    /// 注意：这里只放解析得了的域名。upos-sz-mirror08c.bilivideo.com 已经不存在了
+    /// （日志里 46 次 DNS 失败全是它），放进来只会白占一个线路槽。
+    /// </summary>
     public static readonly string[] Mirrors =
     [
         "upos-sz-mirrorali.bilivideo.com",
-        "upos-sz-mirror08c.bilivideo.com",
         "upos-sz-mirrorhw.bilivideo.com",
         "upos-sz-mirrorcos.bilivideo.com",
         "upos-sz-mirrorbd.bilivideo.com",

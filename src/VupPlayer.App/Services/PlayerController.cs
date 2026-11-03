@@ -46,6 +46,9 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     DateTime? _bufferingSince;
     DateTime? _mpvLoadSince;         // 交给 mpv 加载的时间，开始播放后清空
     readonly LineHealth _health = new();
+    readonly LineProber _prober = new();
+    double _lastCache;               // 上次看到的 demuxer 缓存秒数，用来判断「在下载」还是「真卡住」
+    int _waitExtensions;             // 这次加载因为缓存在涨而多等了几轮
 
     DateTime _lastLoadAt;
 
@@ -103,6 +106,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         if (_mpv is not null && Current is not null && IsLoading && _mpvLoadSince is { } ls
             && DateTime.UtcNow - ls >= TimeSpan.FromSeconds(10))
         {
+            // 数据其实在进来（只是慢），再给一轮，别换到另一条同样冷的线路
+            if (CacheGrowing()) return;
             AppLog.Write("watchdog: 加载超过 10 秒还没开始播放");
             _mpvLoadSince = null;
             if (!TrySwitchLine("连接太慢"))
@@ -132,6 +137,9 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
             if (DateTime.UtcNow - _watchSince < TimeSpan.FromSeconds(8)) return;
         }
 
+        // 还在缓冲但数据在进来：再等一轮，别换线路
+        if (CacheGrowing()) return;
+
         var dur = EffectiveDuration();
         AppLog.Write(bufferingStall
             ? $"watchdog: 在 {_lastPos:0.0}/{dur:0.0} 缓冲超过 6 秒"
@@ -147,6 +155,26 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
             StatusText = "这首一直加载不出来，跳到下一首";
             _ = NextAsync(userInitiated: false);
         }
+    }
+
+    /// <summary>因为缓存还在涨而推迟换线路，最多推迟几轮（每轮 2 秒），免得彻底卡死也不换。</summary>
+    const int MaxWaitExtensions = 4;
+
+    /// <summary>
+    /// demuxer 缓存还在变多 = 数据确实在进来，只是慢。这种情况不要换线路：
+    /// 换过去的多半是另一条同样冷的线路，DNS + 握手要从头再付一次。
+    /// </summary>
+    bool CacheGrowing()
+    {
+        var cache = _mpv?.GetDouble("demuxer-cache-duration") ?? 0;
+        var growing = cache > _lastCache + 0.05;
+        _lastCache = cache;
+        if (!growing || _waitExtensions >= MaxWaitExtensions) return false;
+        _waitExtensions++;
+        AppLog.Write($"watchdog: 缓存在涨（{cache:0.0}s），再等一轮（{_waitExtensions}/{MaxWaitExtensions}）");
+        _mpvLoadSince = DateTime.UtcNow;
+        _watchSince = DateTime.UtcNow;
+        return true;
     }
 
     /// <summary>每首最多换几次线路（包括最后一次重新获取地址）。</summary>
@@ -523,6 +551,21 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         if (gen != _generation) return;   // 用户已经切到别的歌了
         _currentStream = stream;
         if (_lineSwitches == 0) _line = stream.FirstHealthyLine(_health, DateTimeOffset.UtcNow);
+
+        // 先探一下：连不上的线路 3 秒就跳过，不用等看门狗那 10 秒；
+        // 探通的顺便焐热系统 DNS 缓存，mpv 接手时不用再等一次解析
+        var probe = await _prober.PickAsync(stream, _line, StreamMode == StreamMode.Audio, _health);
+        if (gen != _generation) return;
+        if (probe.Line != _line)
+        {
+            AppLog.Write($"  探测跳过 {probe.Probed - 1} 条线路（{probe.Error}），改用线路 {probe.Line + 1}/{stream.LineCount}");
+            _line = probe.Line;
+        }
+        else if (probe.Error is not null && probe.Probed > 1)
+        {
+            AppLog.Write($"  线路都探不通（{probe.Error}），还是交给 mpv 试线路 {_line + 1}/{stream.LineCount}");
+        }
+
         var lineText = stream.LineCount > 1 && _line > 0 ? $" · 线路 {_line + 1}" : "";
         QualityText = StreamMode == StreamMode.Audio
             ? $"纯音频 · {stream.Resolver}{lineText}"
@@ -530,6 +573,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         if (_lineSwitches == 0) StatusText = null;
         _lastLoadAt = DateTime.UtcNow;
         _mpvLoadSince = _lastLoadAt;
+        _lastCache = 0;
+        _waitExtensions = 0;
         AppLog.Write($"  line {_line + 1}/{stream.LineCount}: {stream.HostAt(_line)}");
         _mpv.Load(new MediaSource(
             stream.VideoAt(_line), stream.AudioAt(_line), stream.Headers,
@@ -682,6 +727,7 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         _watchdog.Stop();
         FinishPlayEvent(userInitiated: true);
         FinishLiveEvent();
+        _prober.Dispose();
         _mpv?.Dispose();
         _mpv = null;
     }

@@ -149,9 +149,10 @@ public class StreamLineTests
         var lines = prefs.BuildCandidates(
             "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/a.m4s?deadline=1&os=cosovbv",
             ["https://upos-hz-mirrorakam.akamaized.net/upgcxcode/a.m4s?hdnts=x"]);
+        // 前三条是国内镜像（取 Mirrors 的前 3 个），之后才是 B 站原本分配的海外地址
         Assert.StartsWith("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/a.m4s?deadline=1&os=cosovbv", lines[0]);
-        Assert.StartsWith("https://upos-sz-mirror08c.bilivideo.com/", lines[1]);
-        Assert.StartsWith("https://upos-sz-mirrorhw.bilivideo.com/", lines[2]);
+        Assert.StartsWith("https://upos-sz-mirrorhw.bilivideo.com/", lines[1]);
+        Assert.StartsWith("https://upos-sz-mirrorcos.bilivideo.com/", lines[2]);
         Assert.StartsWith("https://upos-sz-mirrorcosov.bilivideo.com/", lines[3]);
         Assert.StartsWith("https://upos-hz-mirrorakam.akamaized.net/", lines[4]);
         Assert.Equal(lines.Count, lines.Distinct().Count());

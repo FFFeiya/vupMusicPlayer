@@ -22,7 +22,9 @@ public sealed partial class LiveSession : ObservableObject
     [ObservableProperty] public partial string? Title { get; set; }
     [ObservableProperty] public partial string? AreaName { get; set; }
     [ObservableProperty] public partial long Online { get; set; }
+    /// <summary>向 B 站请求的画质。不要用实际拿到的画质覆盖它，否则一次降级之后就再也回不到原画。</summary>
     [ObservableProperty] public partial int Qn { get; set; }
+    /// <summary>实际拿到的画质描述。</summary>
     [ObservableProperty] public partial string? QualityName { get; set; }
 
     /// <summary>这个房间可选的画质。</summary>
@@ -158,12 +160,33 @@ public sealed partial class PlayerController
         if (gen != _generation) return;
 
         live.Qualities = resolved.Qualities;
+        // 只更新「实际画质」，不动 live.Qn（请求画质）：B 站临时给了蓝光不代表以后都只能要蓝光
         live.QualityName = resolved.QualityName;
-        live.Qn = resolved.CurrentQn > 0 ? resolved.CurrentQn : live.Qn;
         _currentStream = resolved.Stream;
         if (_lineSwitches == 0) _line = resolved.Stream.FirstHealthyLine(_health, DateTimeOffset.UtcNow);
-        AppLog.Write($"直播取流 room={live.RoomId} {sw.ElapsedMilliseconds}ms {resolved.Lines.Count} 条线路 画质={resolved.QualityName}");
+        AppLog.Write($"直播取流 room={live.RoomId} {sw.ElapsedMilliseconds}ms {resolved.Lines.Count} 条线路 请求={live.Qn} 实际={resolved.QualityName}");
+        await ProbeLiveLineAsync(resolved.Stream, gen);
+        if (gen != _generation) return;
         PlayLiveLine(gen, resolved.Stream, keepStatus);
+    }
+
+    /// <summary>
+    /// 直播线路先探后播。实测同一个海外节点第一次连接要 6 秒以上、第二次只要 0.6 秒，
+    /// 不先探的话看门狗会在建连期间就判「加载太慢」，换到另一条同样冷的线路，没完没了。
+    /// </summary>
+    async Task ProbeLiveLineAsync(ResolvedStream stream, int gen)
+    {
+        var probe = await _prober.PickAsync(stream, _line, StreamMode == StreamMode.Audio, _health);
+        if (gen != _generation) return;
+        if (probe.Line != _line)
+        {
+            AppLog.Write($"  直播探测跳过 {probe.Probed - 1} 条线路（{probe.Error}），改用线路 {probe.Line + 1}/{stream.LineCount}");
+            _line = probe.Line;
+        }
+        else if (probe.Error is not null && probe.Probed > 1)
+        {
+            AppLog.Write($"  直播线路都探不通（{probe.Error}），还是交给 mpv 试线路 {_line + 1}/{stream.LineCount}");
+        }
     }
 
     /// <summary>不重新取地址，只用当前地址换一条线路或换画面/纯音频。</summary>
@@ -172,6 +195,8 @@ public sealed partial class PlayerController
         if (_currentStream is { } stream && Live is not null && _mpv is not null)
         {
             IsLoading = true;
+            await ProbeLiveLineAsync(stream, gen);
+            if (gen != _generation) return;
             PlayLiveLine(gen, stream, keepStatus);
             return;
         }
@@ -188,6 +213,8 @@ public sealed partial class PlayerController
         if (!keepStatus) StatusText = null;
         _lastLoadAt = DateTime.UtcNow;
         _mpvLoadSince = _lastLoadAt;
+        _lastCache = 0;
+        _waitExtensions = 0;
         AppLog.Write($"  直播线路 {_line + 1}/{stream.LineCount}: {stream.HostAt(_line)}");
         _mpv.Load(new MediaSource(
             stream.VideoAt(_line), stream.AudioAt(_line), stream.Headers,
@@ -206,6 +233,8 @@ public sealed partial class PlayerController
         // 连上了但一直不出数据。直播首帧比点播慢一些，给到 15 秒
         if (IsLoading && _mpvLoadSince is { } ls && DateTime.UtcNow - ls >= TimeSpan.FromSeconds(15))
         {
+            // 数据在进来，只是慢：再等一轮，别换到另一条冷线路
+            if (CacheGrowing()) return;
             AppLog.Write("watchdog: 直播加载超过 15 秒");
             _mpvLoadSince = null;
             if (!TrySwitchLiveLine("连接太慢")) OnLiveError("直播一直连不上");
@@ -233,6 +262,7 @@ public sealed partial class PlayerController
             if (DateTime.UtcNow - _watchSince < TimeSpan.FromSeconds(10)) return;
         }
 
+        if (CacheGrowing()) return;
         AppLog.Write(bufferingStall ? "watchdog: 直播缓冲超过 8 秒" : "watchdog: 直播进度卡住超过 10 秒");
         _watchPos = -1;
         _bufferingSince = null;

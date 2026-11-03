@@ -51,21 +51,47 @@ public sealed record ResolvedStream(
 /// 记录最近卡住或连不上的服务器。同一个镜像坏了往往持续一段时间，
 /// 之后的歌直接跳过它，不用每首都先在它上面等一次超时。
 /// </summary>
-public sealed class LineHealth(TimeSpan? ttl = null)
+public sealed class LineHealth(TimeSpan? ttl = null, TimeSpan? goodTtl = null)
 {
     readonly TimeSpan _ttl = ttl ?? TimeSpan.FromMinutes(10);
+
+    /// <summary>「刚才还好好的」记多久。短一些，这样服务器变坏时很快就会重新探测。</summary>
+    readonly TimeSpan _goodTtl = goodTtl ?? TimeSpan.FromMinutes(2);
+
     readonly Dictionary<string, DateTimeOffset> _bad = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, DateTimeOffset> _good = new(StringComparer.OrdinalIgnoreCase);
     readonly Lock _lock = new();
 
     public void MarkBad(string host, DateTimeOffset now)
     {
         if (string.IsNullOrEmpty(host)) return;
-        lock (_lock) _bad[host] = now;
+        lock (_lock)
+        {
+            _bad[host] = now;
+            _good.Remove(host);
+        }
+    }
+
+    /// <summary>刚刚探通过。连着听歌时后面几首就不用再探同一个 CDN 了。</summary>
+    public void MarkGood(string host, DateTimeOffset now)
+    {
+        if (string.IsNullOrEmpty(host)) return;
+        lock (_lock)
+        {
+            _good[host] = now;
+            _bad.Remove(host);
+        }
     }
 
     public bool IsBad(string host, DateTimeOffset now)
     {
         lock (_lock) return _bad.TryGetValue(host, out var t) && now - t < _ttl;
+    }
+
+    /// <summary>最近探通过，可以直接用，省掉一次探测的往返。</summary>
+    public bool IsRecentlyGood(string host, DateTimeOffset now)
+    {
+        lock (_lock) return _good.TryGetValue(host, out var t) && now - t < _goodTtl;
     }
 }
 
