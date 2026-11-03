@@ -40,6 +40,8 @@ builder.Services
               → merge_streamers 合并（被合并的名字自动成为别名）/ delete_streamer 删除非人名 → update_streamer 记下 UID
               → fill_streamer_by_uploader 先预览再应用，给没主播的曲目按切片 man 补上。
               切片 man 打错字很常见（例如「雾氧Up」其实是「雾氧Uo」），导入时只差一个字的会自动归并并记为别名。
+            - 直播：「X 开播了吗」「谁在播」用 live_status；「去看 X 的直播」用 watch_live（需要播放器运行）。
+              status=Replay 是轮播在放录像，不算开播。管理关注：subscribe_live / set_live_notify / unsubscribe_live。
             - 不提供删除曲目的工具；不想听的曲目用 update_tracks 设置 hidden=true。
             """;
     })

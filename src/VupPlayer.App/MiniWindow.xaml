@@ -115,6 +115,7 @@
                 <TextBlock Text="{Binding Player.Position, Converter={StaticResource Time}}" Foreground="{StaticResource SubTextBrush}" FontSize="10" VerticalAlignment="Center" />
                 <Slider x:Name="ProgressSlider" Grid.Column="1" Style="{StaticResource ThinSlider}" Margin="8,0" Minimum="0"
                         Maximum="{Binding Player.Duration, Converter={StaticResource SafeMax}}"
+                        Visibility="{Binding Player.IsWatchingLive, Converter={StaticResource BoolVis}, ConverterParameter=invert}"
                         PreviewMouseLeftButtonDown="Progress_MouseDown" PreviewMouseLeftButtonUp="Progress_MouseUp" />
                 <TextBlock Grid.Column="2" Text="{Binding Player.Duration, Converter={StaticResource Time}}" Foreground="{StaticResource SubTextBrush}" FontSize="10" VerticalAlignment="Center" />
             </Grid>

@@ -56,7 +56,7 @@ public sealed class Suggestion
 }
 
 /// <summary>曲库的全部读写操作。每个方法自己开关连接，线程安全。</summary>
-public sealed class LibraryRepository(Database db)
+public sealed partial class LibraryRepository(Database db)
 {
     public Database Db { get; } = db;
 

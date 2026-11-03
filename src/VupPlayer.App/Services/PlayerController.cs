@@ -93,6 +93,12 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     /// </summary>
     void Watchdog()
     {
+        // 直播的判断规则不一样（没有曲尾、不能跳下一首），单独处理
+        if (Live is not null)
+        {
+            LiveWatchdog();
+            return;
+        }
         // 线路连得上但一直不出数据：mpv 自己要等 network-timeout 才报错，这里提前换线路
         if (_mpv is not null && Current is not null && IsLoading && _mpvLoadSince is { } ls
             && DateTime.UtcNow - ls >= TimeSpan.FromSeconds(10))
@@ -186,10 +192,11 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         mpv.SetVolume(Volume);
         mpv.SetNormalize(Normalize);
         mpv.PositionChanged += p => OnUi(() => OnPosition(p));
-        mpv.DurationChanged += d => OnUi(() => Duration = d);
+        // 直播的 HLS 流会报出分片时长（十几秒），对直播没有意义，强制归零
+        mpv.DurationChanged += d => OnUi(() => Duration = Live is not null ? 0 : d);
         mpv.PauseChanged += paused => OnUi(() =>
         {
-            IsPlaying = !paused && Current is not null;
+            IsPlaying = !paused && (Current is not null || Live is not null);
             AppLog.Write($"pause={paused} track={Current?.Id} pos={_lastPos:0.0}");
         });
         mpv.BufferingChanged += b => OnUi(() => IsBuffering = b);
@@ -197,8 +204,10 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         {
             IsLoading = false;
             _mpvLoadSince = null;
-            if (StatusText is not null && (StatusText.Contains("线路") || StatusText.Contains("重新获取"))) StatusText = null;
+            if (StatusText is not null && (StatusText.Contains("线路") || StatusText.Contains("重新获取")
+                                           || StatusText.Contains("直播") && Live is not null)) StatusText = null;
             _consecutiveErrors = 0;
+            if (Live is not null) _liveReconnects = 0;
             IsPlaying = !mpv.IsPaused;
         });
         mpv.EndFile += (reason, err) => OnUi(() => OnEndFile(reason, err));
@@ -275,6 +284,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
 
     public async Task NextAsync(bool userInitiated = true)
     {
+        // 看直播时按「下一首」= 离开直播，回到原来的队列
+        StopLive(stopPlayback: false);
         long? next;
         string picker;
         string? reason = null;
@@ -306,6 +317,12 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
 
     public async Task PreviousAsync()
     {
+        if (Live is not null)
+        {
+            StopLive(stopPlayback: false);
+            // 回到离开直播前正在播的那首
+            if (Queue.Current is long back) { await StartTrackAsync(back, true, "manual", null); return; }
+        }
         if (Position > 5 && Current is not null)
         {
             _mpv?.Seek(Current.StartSec ?? 0);
@@ -386,7 +403,7 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     public void TogglePause()
     {
         if (_mpv is null) return;
-        if (Current is null)
+        if (Current is null && Live is null)
         {
             // 没有在播：尝试恢复上次的曲目
             if (_settings.LastTrackId is long last && _repo.GetTrack(last) is not null)
@@ -401,19 +418,23 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
 
     public void Seek(double seconds)
     {
-        if (_mpv is null || Current is null) return;
+        // 直播不能拖进度
+        if (_mpv is null || Current is null || Live is not null) return;
         _mpv.Seek(seconds + (Current.StartSec ?? 0));
     }
 
     public void Stop()
     {
         FinishPlayEvent(userInitiated: true);
+        FinishLiveEvent();
+        Live = null;
         _generation++;
         _mpv?.Stop();
         Current = null;
         IsPlaying = false;
         Position = 0;
         Duration = 0;
+        QualityText = null;
     }
 
     /// <summary>画面 + 声音 ⇄ 纯音频。正在播放时按原位置重新加载。</summary>
@@ -422,6 +443,12 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         if (StreamMode == mode) return;
         StreamMode = mode;
         _settings.StreamMode = mode;
+        if (Live is not null && _mpv is not null)
+        {
+            // 直播是同一条流，换模式只是给 mpv 加不加 vid=no，不用重新取地址
+            await ReloadLiveLineAsync(++_generation);
+            return;
+        }
         if (Current is { } cur && _mpv is not null)
         {
             // 不能用 mpv 的 Position：刚切歌、新文件还没加载完时，它还是上一首的位置
@@ -447,6 +474,8 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     async Task StartTrackAsync(long trackId, bool userInitiated, string picker, string? reason)
     {
         FinishPlayEvent(userInitiated);
+        // 从直播切回曲库播放
+        StopLive(stopPlayback: false);
         _currentPicker = picker;
         RecommendReason = reason;
         var gen = ++_generation;
@@ -523,9 +552,13 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
         var now = DateTime.UtcNow;
         if (now - _lastUiPosition > TimeSpan.FromMilliseconds(250))
         {
-            Position = Math.Max(0, rel);
+            // 直播没有进度，进度条位置改成显示「已看多久」
+            Position = Live is not null ? _playedSec : Math.Max(0, rel);
             _lastUiPosition = now;
         }
+
+        // 直播不预取、也没有下一首
+        if (Live is not null) return;
 
         // 播到一定进度时预取下一首的播放地址，切歌时就不用等
         var dur = EffectiveDuration();
@@ -575,7 +608,12 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
 
     void OnEndFile(MpvEndReason reason, string? error)
     {
-        AppLog.Write($"end-file reason={reason} error={error} track={Current?.Id} pos={_lastPos:0.0}");
+        AppLog.Write($"end-file reason={reason} error={error} track={Current?.Id} live={Live?.RoomId} pos={_lastPos:0.0}");
+        if (Live is not null)
+        {
+            OnLiveEndFile(reason, error);
+            return;
+        }
         switch (reason)
         {
             case MpvEndReason.Eof:
@@ -643,6 +681,7 @@ public sealed partial class PlayerController : ObservableObject, IDisposable
     {
         _watchdog.Stop();
         FinishPlayEvent(userInitiated: true);
+        FinishLiveEvent();
         _mpv?.Dispose();
         _mpv = null;
     }

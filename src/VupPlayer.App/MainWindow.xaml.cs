@@ -1,8 +1,12 @@
 ﻿using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
+using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media.Imaging;
+using VupPlayer.Bilibili;
 using VupPlayer.App.Services;
 using VupPlayer.App.ViewModels;
 using VupPlayer.App.Views;
@@ -19,6 +23,7 @@ public partial class MainWindow : Window
     readonly AppSettings _settings;
     readonly App _app;
     bool _dragging;
+    string? _liveCoverUrl;
 
     public bool AllowClose { get; set; }
 
@@ -81,6 +86,7 @@ public partial class MainWindow : Window
                 break;
             case nameof(PlayerController.StreamMode):
             case nameof(PlayerController.Current):
+            case nameof(PlayerController.Live):
                 UpdateMediaArea();
                 break;
             case nameof(PlayerController.PlayMode):
@@ -92,11 +98,60 @@ public partial class MainWindow : Window
     /// <summary>画面模式显示 mpv 窗口，纯音频模式显示封面。HwndHost 总是盖在 WPF 内容之上，所以只能切换可见性。</summary>
     void UpdateMediaArea()
     {
-        var hasTrack = Player.Current is not null;
-        var video = Player.StreamMode == StreamMode.Video && hasTrack;
+        // 看直播时 Current 是空的，但一样要显示画面 / 直播间封面
+        var live = Player.Live is not null;
+        var hasMedia = Player.Current is not null || live;
+        var video = Player.StreamMode == StreamMode.Video && hasMedia;
         VideoHost.Visibility = video ? Visibility.Visible : Visibility.Hidden;
-        CoverImage.Visibility = !video && hasTrack ? Visibility.Visible : Visibility.Collapsed;
-        NoTrackHint.Visibility = hasTrack ? Visibility.Collapsed : Visibility.Visible;
+        CoverImage.Visibility = !video && Player.Current is not null ? Visibility.Visible : Visibility.Collapsed;
+        LiveCoverImage.Visibility = !video && live ? Visibility.Visible : Visibility.Collapsed;
+        NoTrackHint.Visibility = hasMedia ? Visibility.Collapsed : Visibility.Visible;
+        // 直播封面直接赋值，不走绑定：Live 变化时绑定不会重新求值（Live 的属性本身不发通知）
+        var cover = Player.Live?.Cover;
+        if (_liveCoverUrl != cover)
+        {
+            _liveCoverUrl = cover;
+            LiveCoverImage.Source = null;
+            if (cover is { Length: > 0 }) _ = LoadLiveCoverAsync(cover);
+        }
+    }
+
+    static readonly HttpClient LiveCoverHttp = new() { Timeout = TimeSpan.FromSeconds(10) };
+
+    /// <summary>
+    /// 自己下载直播间封面再解码。不用 BitmapImage 的 UriSource：它异步下载，
+    /// 失败时会把 Image.Source 悄悄清成 null，既看不到图也没有任何提示。
+    /// </summary>
+    async Task LoadLiveCoverAsync(string url)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.UserAgent.ParseAdd(BiliApi.UserAgent);
+            req.Headers.Referrer = new Uri(BiliApi.LiveReferer);
+            var bytes = await LiveCoverHttp.SendAsync(req).ConfigureAwait(false) is { IsSuccessStatusCode: true } resp
+                ? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
+                : null;
+            if (bytes is not { Length: > 0 }) { AppLog.Write("直播封面下载失败：" + url); return; }
+            await Dispatcher.InvokeAsync(() =>
+            {
+                // 期间可能已经换了直播间
+                if (_liveCoverUrl != url) return;
+                var bmp = new BitmapImage();
+                bmp.BeginInit();
+                bmp.StreamSource = new MemoryStream(bytes);
+                bmp.DecodePixelWidth = 480;
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+                bmp.EndInit();
+                bmp.Freeze();
+                LiveCoverImage.Source = bmp;
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"直播封面加载失败 {url}：{ex.Message}");
+        }
     }
 
     // ---------------- 自绘标题栏 ----------------

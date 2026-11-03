@@ -43,7 +43,7 @@ public sealed record PlayUrlInfo(IReadOnlyList<DashStream> Videos, IReadOnlyList
 public enum QrState { Waiting, Scanned, Expired, Success }
 
 /// <summary>B 站网页端接口的最小封装：带 cookie、限流、WBI 签名和 buvid 初始化。</summary>
-public sealed class BiliApi : IDisposable
+public sealed partial class BiliApi : IDisposable
 {
     public const string UserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
@@ -84,7 +84,8 @@ public sealed class BiliApi : IDisposable
 
     // ---------------- 底层 ----------------
 
-    async Task<JsonNode> GetJsonAsync(string url, CancellationToken ct, bool checkCode = true)
+    /// <param name="referer">覆盖默认 Referer（直播接口和直播流要求 live.bilibili.com）。</param>
+    async Task<JsonNode> GetJsonAsync(string url, CancellationToken ct, bool checkCode = true, string? referer = null)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -98,7 +99,9 @@ public sealed class BiliApi : IDisposable
             _gate.Release();
         }
 
-        using var resp = await _http.GetAsync(url, ct).ConfigureAwait(false);
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        if (referer is not null) req.Headers.Referrer = new Uri(referer);
+        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
         if (resp.StatusCode == HttpStatusCode.PreconditionFailed) throw new BiliApiException(412, "请求被风控拦截，请稍后再试或登录");
         var text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         JsonNode node;

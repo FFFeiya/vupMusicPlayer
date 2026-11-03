@@ -23,6 +23,8 @@ public partial class App : Application
     DispatcherTimer? _saveTimer;
     DispatcherTimer? _discoveryTimer;
     bool _discoveryRunning;
+    DispatcherTimer? _liveTimer;
+    bool _livePolling;
     MediaControls? _media;
     bool _trayTipShown;
 
@@ -36,6 +38,8 @@ public partial class App : Application
     public CachingStreamResolver Resolver { get; private set; } = null!;
     public LibraryImporter Importer { get; private set; } = null!;
     public DiscoveryService Discovery { get; private set; } = null!;
+    public LiveService Live { get; private set; } = null!;
+    public LiveToast Toast { get; } = new();
     public AppSettings Settings { get; private set; } = null!;
     public PlayerController Player { get; private set; } = null!;
     public MainViewModel ViewModel { get; private set; } = null!;
@@ -91,9 +95,25 @@ public partial class App : Application
         Player = new PlayerController(Repo, Resolver, Settings, Dispatcher);
         Importer = new LibraryImporter(Api, YtDlp, Repo);
         Discovery = new DiscoveryService(Api, Repo);
+        Live = new LiveService(Api, Repo);
         Player.DiscoveryImporter = ImportDiscoveryAsync;
+        Player.LiveApi = Live;
+        Player.LiveEnded += live =>
+        {
+            Toast.Retract(live.RoomId);
+            ViewModel.RefreshLive();
+        };
+        // 通知必须在显示窗口之前注册（它会设置进程的 AUMID）
+        if (!DevMode)
+        {
+            Toast.Register();
+            Toast.Activated += OnToastActivated;
+        }
         ViewModel = new MainViewModel(Repo, Api, Importer, Player);
         ViewModel.DiscoveryRefresher = () => RefreshDiscoveryAsync(force: true);
+        ViewModel.LiveWatcher = WatchLiveAsync;
+        ViewModel.LivePoller = async () => await PollLiveAsync();
+        ViewModel.LiveApi = Live;
         Shell = new MainWindow(ViewModel, Settings, this);
         MainWindow = Shell;
         if (DevMode)
@@ -133,6 +153,23 @@ public partial class App : Application
             if (Settings.DiscoveryRate > 0) await RefreshDiscoveryAsync(force: false);
         };
         _discoveryTimer.Start();
+
+        // 直播：第一次装好时把曲库里有 UID 的主播导进订阅（只做一次，之后由用户自己加减）
+        if (Repo.GetMeta(LiveSyncedKey) is null)
+        {
+            var n = Live.SyncFromStreamers();
+            Repo.SetMeta(LiveSyncedKey, Clock.Now().ToString());
+            if (n > 0) AppLog.Write($"从曲库导入 {n} 个主播到直播订阅");
+        }
+        // 开播状态：启动 30 秒后查一次，之后按设置的间隔。
+        // 第一轮只落库不推送，不然一开机就把所有在播的人全弹一遍（见 LiveTransitions.Diff）
+        _liveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _liveTimer.Tick += async (_, _) =>
+        {
+            _liveTimer.Interval = TimeSpan.FromMinutes(Math.Max(1, Settings.LiveCheckMinutes));
+            if (Settings.LiveCheckMinutes > 0) await PollLiveAsync();
+        };
+        _liveTimer.Start();
 
         if (e.Args.Length > 0)
         {
@@ -174,6 +211,80 @@ public partial class App : Application
         {
             _discoveryRunning = false;
         }
+    }
+
+    // ---------------- 直播 ----------------
+
+    const string LiveSyncedKey = "live.synced_from_streamers";
+
+    /// <summary>查一轮开播状态，给刚开播的主播弹通知。</summary>
+    public async Task<LivePollResult?> PollLiveAsync()
+    {
+        if (_livePolling) return null;
+        _livePolling = true;
+        try
+        {
+            var r = await Live.PollAsync();
+            if (r.Error is not null) AppLog.Write("查开播状态失败：" + r.Error);
+            foreach (var c in r.Changes)
+            {
+                AppLog.Write($"直播状态 {c.Room.DisplayName} {c.From} → {c.To}" + (c.Notify ? "（推送）" : ""));
+                if (c.Notify && Settings.LiveNotify)
+                {
+                    // 用刚查到的标题和封面，不是库里的旧值
+                    var room = Repo.GetLiveRoom(c.Room.Mid) ?? c.Room;
+                    await Toast.ShowLiveAsync(room, Settings.LiveNotifySilent);
+                }
+                else if (c.WentOffline) Toast.Retract(c.Room.RoomId);
+            }
+            if (r.Changes.Count > 0) ViewModel.RefreshLive();
+            return r;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("查开播状态出错：" + ex.Message);
+            return null;
+        }
+        finally
+        {
+            _livePolling = false;
+        }
+    }
+
+    /// <summary>点了开播通知。</summary>
+    void OnToastActivated(LiveToastAction a)
+    {
+        Dispatcher.BeginInvoke(async () =>
+        {
+            switch (a.Action)
+            {
+                case "mute":
+                    if (a.Mid > 0) Repo.SetLiveNotify(a.Mid, false);
+                    Toast.Retract(a.RoomId);
+                    ViewModel.RefreshLive();
+                    break;
+                case "watch" or "open":
+                    Toast.Retract(a.RoomId);
+                    if (IsMiniMode) ShowMini(); else Shell.BringToFront();
+                    if (a.RoomId > 0) await WatchLiveAsync(a.RoomId);
+                    break;
+            }
+        });
+    }
+
+    /// <summary>开始看一个直播间。界面和 MCP 都走这里。</summary>
+    public async Task WatchLiveAsync(long roomId)
+    {
+        var room = Repo.GetLiveRoomByRoomId(roomId);
+        await Player.StartLiveAsync(
+            roomId,
+            room?.DisplayName ?? $"房间 {roomId}",
+            room?.Mid ?? 0,
+            room?.LastCover,
+            room?.LastTitle,
+            room?.LastArea,
+            room?.LiveSince,
+            Settings.LiveQuality);
     }
 
     public void ApplyRecommendSettings()
@@ -319,6 +430,22 @@ public partial class App : Application
         menu.Items.Add("切换画面 / 纯音频", null, async (_, _) => await ToggleStreamModeAsync());
         menu.Items.Add("切换播放模式", null, (_, _) => Player.CyclePlayMode());
         menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("查一下谁在直播", null, async (_, _) =>
+        {
+            var r = await PollLiveAsync();
+            var n = Repo.CountLive();
+            _tray?.ShowBalloonTip(3000, "VUP 切片播放器",
+                r?.Error is { } err ? "查开播状态失败：" + err : n > 0 ? $"{n} 位主播正在直播" : "现在没人在播",
+                Forms.ToolTipIcon.Info);
+            if (n > 0)
+            {
+                if (IsMiniMode) ShowMini(); else Shell.BringToFront();
+                if (ViewModel.NavItems.FirstOrDefault(x => x.Kind == ViewModels.NavKind.Live) is { } nav)
+                    ViewModel.SelectedNav = nav;
+            }
+        });
+        menu.Items.Add("离开直播", null, (_, _) => Player.StopLive());
+        menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => Quit());
         _tray.ContextMenuStrip = menu;
         _tray.MouseClick += (_, e) =>
@@ -335,9 +462,10 @@ public partial class App : Application
         };
         Player.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName != nameof(PlayerController.Current) || _tray is null) return;
-            var title = Player.Current?.DisplayTitle;
-            var text = title is null ? "VUP 切片播放器" : "♪ " + title;
+            if (e.PropertyName is not (nameof(PlayerController.Current) or nameof(PlayerController.Live)) || _tray is null) return;
+            var text = Player.Live is { } live ? $"● 直播：{live.Name}"
+                : Player.Current?.DisplayTitle is string title ? "♪ " + title
+                : "VUP 切片播放器";
             _tray.Text = text.Length > 63 ? text[..63] : text;
         };
     }
@@ -499,6 +627,48 @@ public partial class App : Application
                 ViewModel.AfterLibraryEdit();
                 return Ok();
 
+            // ---- 直播 ----
+
+            case "live_status":
+            {
+                // {"refresh": true} 时先查一轮 B 站
+                if (a["refresh"]?.GetValue<bool>() == true) await PollLiveAsync();
+                var arr = new JsonArray();
+                foreach (var r in Repo.ListLiveRooms()) arr.Add(LiveBrief(r));
+                return Ok(new JsonObject
+                {
+                    ["live_count"] = Repo.CountLive(),
+                    ["watching"] = Player.Live?.RoomId,
+                    ["rooms"] = arr,
+                });
+            }
+
+            case "watch_live":
+            {
+                // {"room_id": 80397} 或 {"streamer": "阿梓"} 或 {"mid": 7706705}
+                var room = a["room_id"]?.GetValue<long>();
+                if (room is null && a["mid"]?.GetValue<long>() is long mid)
+                    room = Repo.GetLiveRoom(mid)?.RoomId;
+                if (room is null && a["streamer"]?.GetValue<string>() is string name)
+                {
+                    var hit = Repo.ListLiveRooms().FirstOrDefault(r =>
+                        r.DisplayName.Contains(name, StringComparison.OrdinalIgnoreCase)
+                        || (r.Uname?.Contains(name, StringComparison.OrdinalIgnoreCase) ?? false));
+                    if (hit is null) return Fail($"直播订阅里找不到「{name}」");
+                    if (!hit.IsLive) return Fail($"{hit.DisplayName} 现在没有在直播（{hit.StatusText}）");
+                    room = hit.RoomId;
+                }
+                if (room is not long roomId || roomId <= 0) return Fail("要传 room_id、mid 或 streamer");
+                await WatchLiveAsync(roomId);
+                await Task.Delay(300);
+                return Ok(NowPlaying());
+            }
+
+            case "stop_live":
+                if (Player.Live is null) return Fail("现在没有在看直播");
+                Player.StopLive();
+                return Ok(NowPlaying());
+
             case "view_mode":
             {
                 // {"mode": "full" | "widget" | "mini"}
@@ -558,6 +728,9 @@ public partial class App : Application
                     o[name] = Player.DebugProperty(name);
                 o["video_host_visible"] = Shell.VideoHost.IsVisible;
                 o["video_host_size"] = $"{Shell.VideoHost.ActualWidth}x{Shell.VideoHost.ActualHeight}";
+                o["live_cover_visible"] = Shell.LiveCoverImage.IsVisible;
+                o["live_cover_loaded"] = Shell.LiveCoverImage.Source is not null;
+                o["live_cover_url"] = Player.Live?.Cover;
                 return Ok(o);
             }
 
@@ -601,8 +774,35 @@ public partial class App : Application
             ["recommend_reason"] = Player.RecommendReason,
         };
         if (Player.Current is { } t) o["track"] = Brief(t);
+        if (Player.Live is { } live)
+            o["live"] = new JsonObject
+            {
+                ["room_id"] = live.RoomId,
+                ["streamer"] = live.Name,
+                ["title"] = live.Title,
+                ["area"] = live.AreaName,
+                ["quality"] = live.QualityName,
+                ["watched_sec"] = Math.Round(Player.Position, 1),
+            };
         return o;
     }
+
+    static JsonObject LiveBrief(LiveRoom r) => new()
+    {
+        ["mid"] = r.Mid,
+        ["room_id"] = r.RoomId,
+        ["streamer"] = r.DisplayName,
+        ["uname"] = r.Uname,
+        ["live"] = r.IsLive,
+        ["status"] = r.LastStatus.ToString(),
+        ["title"] = r.LastTitle,
+        ["area"] = r.LastArea,
+        ["online"] = r.Online,
+        ["live_since"] = r.LiveSince,
+        ["notify"] = r.Notify,
+        ["track_count"] = r.TrackCount,
+        ["url"] = r.Url,
+    };
 
     static JsonObject Brief(TrackView t) => new()
     {

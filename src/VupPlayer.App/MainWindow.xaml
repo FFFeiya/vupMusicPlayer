@@ -16,6 +16,7 @@
         <local:FavoriteGlyphConverter x:Key="FavGlyph" />
         <local:CoverConverter x:Key="Cover" />
         <local:SafeMaxConverter x:Key="SafeMax" />
+        <local:LiveStatusConverter x:Key="LiveConv" />
 
         <CollectionViewSource x:Key="NavView" Source="{Binding NavItems}">
             <CollectionViewSource.GroupDescriptions>
@@ -199,7 +200,8 @@
                           VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
                           MouseDoubleClick="TrackList_MouseDoubleClick" ContextMenuOpening="TrackList_ContextMenuOpening"
                           KeyDown="TrackList_KeyDown" SizeChanged="TrackList_SizeChanged"
-                          ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          Visibility="{Binding IsLiveList, Converter={StaticResource BoolVis}, ConverterParameter=invert}">
                     <ListView.ContextMenu>
                         <ContextMenu />
                     </ListView.ContextMenu>
@@ -267,9 +269,111 @@
                     </ListView.View>
                 </ListView>
 
+                <!-- ============ 直播间列表（直播页专用，封面卡片） ============ -->
+                <ListBox x:Name="LiveList" Grid.Row="1" ItemsSource="{Binding LiveRooms}" Background="Transparent" BorderThickness="0"
+                         Visibility="{Binding IsLiveList, Converter={StaticResource BoolVis}}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch"
+                         MouseDoubleClick="LiveList_MouseDoubleClick" ContextMenuOpening="LiveList_ContextMenuOpening">
+                    <ListBox.ContextMenu>
+                        <ContextMenu />
+                    </ListBox.ContextMenu>
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="Padding" Value="8" />
+                            <Setter Property="Margin" Value="0,0,0,6" />
+                            <Setter Property="Background" Value="Transparent" />
+                            <Setter Property="BorderThickness" Value="0" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+                                            <ContentPresenter HorizontalAlignment="Stretch" />
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="bd" Property="Background" Value="{StaticResource HoverBrush}" />
+                                            </Trigger>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter TargetName="bd" Property="Background" Value="{StaticResource SurfaceBrush}" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <!-- 封面 + 直播中徽标 -->
+                                <Border Width="124" Height="70" CornerRadius="6" Background="#0E0F13" ClipToBounds="True">
+                                    <Grid>
+                                        <Image Stretch="UniformToFill" Source="{Binding LastCover, Converter={StaticResource Cover}, ConverterParameter=260}" />
+                                        <Border CornerRadius="3" Padding="5,1" Margin="5" HorizontalAlignment="Left" VerticalAlignment="Top"
+                                                Background="{Binding LastStatus, Converter={StaticResource LiveConv}}">
+                                            <TextBlock Text="{Binding LastStatus, Converter={StaticResource LiveConv}, ConverterParameter=badge}"
+                                                       Foreground="White" FontSize="10" />
+                                        </Border>
+                                    </Grid>
+                                </Border>
+
+                                <!-- 主播 / 标题 / 状态 -->
+                                <StackPanel Grid.Column="1" Margin="14,0,10,0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding LastTitle}" FontSize="12" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"
+                                               Foreground="{StaticResource SubTextBrush}" />
+                                    <TextBlock FontSize="11" Margin="0,4,0,0" Foreground="{StaticResource SubTextBrush}" TextTrimming="CharacterEllipsis">
+                                        <Run Text="{Binding StatusText, Mode=OneWay}" />
+                                        <Run Text="{Binding LastArea, Mode=OneWay, StringFormat=' · {0}'}" />
+                                    </TextBlock>
+                                </StackPanel>
+
+                                <!-- 右侧：切片数 + 提醒开关状态 -->
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Right">
+                                    <TextBlock HorizontalAlignment="Right" FontSize="11" Foreground="{StaticResource SubTextBrush}"
+                                               Text="{Binding TrackCount, StringFormat='曲库 {0} 首'}"
+                                               Visibility="{Binding TrackCount, Converter={StaticResource BoolVis}}" />
+                                    <TextBlock HorizontalAlignment="Right" FontSize="11" Margin="0,4,0,0" Foreground="{StaticResource SubTextBrush}"
+                                               Text="&#xE7ED; 提醒已关" ToolTip="右键可以重新打开开播提醒"
+                                               Visibility="{Binding Notify, Converter={StaticResource BoolVis}, ConverterParameter=invert}" />
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <!-- 直播页的空状态 -->
+                <StackPanel Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
+                    <StackPanel.Style>
+                        <Style TargetType="StackPanel">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsLiveList}" Value="True" />
+                                        <Condition Binding="{Binding LiveRooms.Count}" Value="0" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </MultiDataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </StackPanel.Style>
+                    <TextBlock Text="&#xE7F4;" FontFamily="{StaticResource IconFont}" FontSize="40" Foreground="{StaticResource HoverBrush}" HorizontalAlignment="Center" />
+                    <TextBlock Text="还没有订阅的直播间" FontSize="15" Margin="0,12,0,0" HorizontalAlignment="Center" />
+                    <TextBlock Text="点右上角「从曲库导入主播」，或者在上方粘贴 live.bilibili.com 的直播间链接" HorizontalAlignment="Center"
+                               Foreground="{StaticResource SubTextBrush}" FontSize="12" Margin="0,6,0,0" />
+                </StackPanel>
+
                 <!-- 空状态 -->
                 <StackPanel Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False"
-                            Visibility="{Binding Tracks.Count, Converter={StaticResource BoolVis}, ConverterParameter=invert}">
+                            Visibility="{Binding ShowEmptyHint, Converter={StaticResource BoolVis}}">
                     <TextBlock Text="&#xE8D6;" FontFamily="{StaticResource IconFont}" FontSize="40" Foreground="{StaticResource HoverBrush}" HorizontalAlignment="Center" />
                     <TextBlock Text="这里还没有曲目" FontSize="15" Margin="0,12,0,0" HorizontalAlignment="Center" />
                     <TextBlock Text="在上方粘贴 BV 号或收藏夹链接导入；登录后可以直接导入自己的收藏夹" Foreground="{StaticResource SubTextBrush}" FontSize="12" Margin="0,6,0,0" HorizontalAlignment="Center" />
@@ -291,6 +395,8 @@
                         <Grid>
                             <Image x:Name="CoverImage" Stretch="UniformToFill"
                                    Source="{Binding Player.Current.CoverUrl, Converter={StaticResource Cover}, ConverterParameter=480}" />
+                            <!-- 纯音频看直播时显示直播间封面。可见性和图片都由 UpdateMediaArea 统一设置 -->
+                            <Image x:Name="LiveCoverImage" Stretch="UniformToFill" Visibility="Collapsed" />
                             <controls:MpvHost x:Name="VideoHost" />
                             <TextBlock x:Name="NoTrackHint" Text="选择一首切片开始播放" Foreground="{StaticResource SubTextBrush}"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" />
@@ -322,6 +428,35 @@
                                    Visibility="{Binding Player.StatusText, Converter={StaticResource BoolVis}}" />
                     </StackPanel>
 
+                    <!-- 正在看直播 -->
+                    <StackPanel x:Name="NowLiveInfo" Grid.Row="1" Margin="2,12,2,0"
+                                Visibility="{Binding Player.IsWatchingLive, Converter={StaticResource BoolVis}}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Background="#E23A3A" CornerRadius="3" Padding="5,1" VerticalAlignment="Center">
+                                <TextBlock Text="直播" Foreground="White" FontSize="10" />
+                            </Border>
+                            <TextBlock Text="{Binding Player.Live.Name}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding Player.Live.Title}" Margin="0,6,0,0" FontSize="12" TextTrimming="CharacterEllipsis"
+                                   Foreground="{StaticResource SubTextBrush}" ToolTip="{Binding Player.Live.Title}" />
+                        <TextBlock Margin="0,4,0,0" FontSize="11" Foreground="{StaticResource SubTextBrush}" TextTrimming="CharacterEllipsis">
+                            <Run Text="{Binding Player.Live.AreaName, Mode=OneWay, FallbackValue=''}" />
+                            <Run Text="{Binding Player.Live.OnlineText, Mode=OneWay, FallbackValue='', StringFormat='  ·  {0}'}" />
+                        </TextBlock>
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <TextBlock Text="{Binding Player.QualityText}" Foreground="{StaticResource SubTextBrush}" FontSize="11" />
+                            <TextBlock Text="  缓冲中…" Foreground="{StaticResource AccentBrush}" FontSize="11"
+                                       Visibility="{Binding Player.IsBuffering, Converter={StaticResource BoolVis}}" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding Player.StatusText}" Foreground="{StaticResource AccentBrush}" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"
+                                   Visibility="{Binding Player.StatusText, Converter={StaticResource BoolVis}}" />
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button Style="{StaticResource FlatButton}" Content="离开直播" Click="LeaveLive_Click" />
+                            <Button Style="{StaticResource FlatButton}" Content="画质" Margin="8,0,0,0" Click="LiveQuality_Click" />
+                        </StackPanel>
+                    </StackPanel>
+
                     <!-- 挂件模式：紧凑控制条 -->
                     <StackPanel x:Name="WidgetControls" Grid.Row="2" Margin="0,8,0,0" Visibility="Collapsed">
                         <Grid>
@@ -333,6 +468,7 @@
                             <TextBlock Text="{Binding Player.Position, Converter={StaticResource Time}}" Foreground="{StaticResource SubTextBrush}" FontSize="10" VerticalAlignment="Center" />
                             <Slider x:Name="WidgetProgress" Grid.Column="1" Style="{StaticResource ThinSlider}" Margin="8,0" Minimum="0"
                                     Maximum="{Binding Player.Duration, Converter={StaticResource SafeMax}}"
+                                    Visibility="{Binding Player.IsWatchingLive, Converter={StaticResource BoolVis}, ConverterParameter=invert}"
                                     PreviewMouseLeftButtonDown="Progress_MouseDown" PreviewMouseLeftButtonUp="Progress_MouseUp" />
                             <TextBlock Grid.Column="2" Text="{Binding Player.Duration, Converter={StaticResource Time}}" Foreground="{StaticResource SubTextBrush}" FontSize="10" VerticalAlignment="Center" />
                         </Grid>
@@ -417,11 +553,27 @@
             <!-- 左：当前曲目 -->
             <DockPanel Margin="16,0,0,0" VerticalAlignment="Center">
                 <Border DockPanel.Dock="Left" Width="56" Height="56" CornerRadius="6" Background="{StaticResource SurfaceBrush}" ClipToBounds="True">
-                    <Image Stretch="UniformToFill" Source="{Binding Player.Current.CoverUrl, Converter={StaticResource Cover}, ConverterParameter=120}" />
+                    <Grid>
+                        <Image Stretch="UniformToFill" Source="{Binding Player.Current.CoverUrl, Converter={StaticResource Cover}, ConverterParameter=120}" />
+                        <Image Stretch="UniformToFill" Source="{Binding Player.Live.Cover, Converter={StaticResource Cover}, ConverterParameter=120}"
+                               Visibility="{Binding Player.IsWatchingLive, Converter={StaticResource BoolVis}}" />
+                    </Grid>
                 </Border>
-                <StackPanel Margin="12,0,8,0" VerticalAlignment="Center">
+                <StackPanel Margin="12,0,8,0" VerticalAlignment="Center"
+                            Visibility="{Binding Player.IsWatchingLive, Converter={StaticResource BoolVis}, ConverterParameter=invert}">
                     <TextBlock Text="{Binding Player.Current.DisplayTitle, FallbackValue='未在播放'}" TextTrimming="CharacterEllipsis" FontSize="13.5" />
                     <TextBlock Text="{Binding Player.Current.StreamerName}" Foreground="{StaticResource SubTextBrush}" FontSize="12" Margin="0,3,0,0" TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+                <!-- 看直播时：主播名前面挂一个红色「直播」徽标 -->
+                <StackPanel Margin="12,0,8,0" VerticalAlignment="Center"
+                            Visibility="{Binding Player.IsWatchingLive, Converter={StaticResource BoolVis}}">
+                    <StackPanel Orientation="Horizontal">
+                        <Border Background="#E23A3A" CornerRadius="3" Padding="4,0" VerticalAlignment="Center">
+                            <TextBlock Text="直播" Foreground="White" FontSize="9.5" />
+                        </Border>
+                        <TextBlock Text="{Binding Player.Live.Name}" TextTrimming="CharacterEllipsis" FontSize="13.5" Margin="6,0,0,0" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding Player.Live.Title}" Foreground="{StaticResource SubTextBrush}" FontSize="12" Margin="0,3,0,0" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
             </DockPanel>
 
@@ -446,8 +598,14 @@
                     <TextBlock Text="{Binding Player.Position, Converter={StaticResource Time}}" Foreground="{StaticResource SubTextBrush}" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
                     <Slider x:Name="ProgressSlider" Grid.Column="1" Style="{StaticResource ThinSlider}" Margin="10,0" Minimum="0"
                             Maximum="{Binding Player.Duration, Converter={StaticResource SafeMax}}"
+                            Visibility="{Binding Player.IsWatchingLive, Converter={StaticResource BoolVis}, ConverterParameter=invert}"
                             PreviewMouseLeftButtonDown="Progress_MouseDown" PreviewMouseLeftButtonUp="Progress_MouseUp" />
-                    <TextBlock Grid.Column="2" Text="{Binding Player.Duration, Converter={StaticResource Time}}" Foreground="{StaticResource SubTextBrush}" FontSize="11" VerticalAlignment="Center" />
+                    <!-- 直播没有进度可拖，左边的时间显示的是「已看多久」 -->
+                    <TextBlock Grid.Column="1" Text="直播中，不能拖进度" Foreground="{StaticResource SubTextBrush}" FontSize="11" Margin="10,0"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Visibility="{Binding Player.IsWatchingLive, Converter={StaticResource BoolVis}}" />
+                    <TextBlock Grid.Column="2" Text="{Binding Player.Duration, Converter={StaticResource Time}}" Foreground="{StaticResource SubTextBrush}" FontSize="11" VerticalAlignment="Center"
+                               Visibility="{Binding Player.IsWatchingLive, Converter={StaticResource BoolVis}, ConverterParameter=invert}" />
                 </Grid>
             </StackPanel>
 

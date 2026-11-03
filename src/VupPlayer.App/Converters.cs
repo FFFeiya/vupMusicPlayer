@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using VupPlayer.Core.Playback;
 using VupPlayer.Core.Streams;
@@ -112,10 +113,39 @@ public sealed class CoverConverter : IValueConverter
             bmp.EndInit();
             return bmp;
         }
-        catch
+        catch (Exception ex)
         {
+            Services.AppLog.Write($"封面加载失败 {url}：{ex.Message}");
             return null;
         }
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotSupportedException();
+}
+
+/// <summary>直播状态 → 小圆点颜色 / 徽标文字。</summary>
+public sealed class LiveStatusConverter : IValueConverter
+{
+    static readonly SolidColorBrush Live = new(Color.FromRgb(0xE2, 0x3A, 0x3A));
+    static readonly SolidColorBrush Replay = new(Color.FromRgb(0xC9, 0x92, 0x3E));
+    static readonly SolidColorBrush Offline = new(Color.FromRgb(0x5A, 0x5C, 0x68));
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        var s = value as VupPlayer.Core.LiveStatus? ?? VupPlayer.Core.LiveStatus.Offline;
+        if (parameter as string == "badge")
+            return s switch
+            {
+                VupPlayer.Core.LiveStatus.Live => "直播中",
+                VupPlayer.Core.LiveStatus.Replay => "轮播",
+                _ => "未开播",
+            };
+        return s switch
+        {
+            VupPlayer.Core.LiveStatus.Live => Live,
+            VupPlayer.Core.LiveStatus.Replay => Replay,
+            _ => Offline,
+        };
     }
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotSupportedException();

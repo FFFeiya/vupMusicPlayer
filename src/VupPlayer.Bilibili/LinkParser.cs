@@ -2,10 +2,10 @@ using System.Text.RegularExpressions;
 
 namespace VupPlayer.Bilibili;
 
-public enum LinkKind { Video, Fav, Season, Space, ShortLink, Other, Invalid }
+public enum LinkKind { Video, Fav, Season, Space, Live, ShortLink, Other, Invalid }
 
 public sealed record ParsedLink(LinkKind Kind, string? Bvid = null, long? Aid = null, int? Page = null,
-    long? MediaId = null, long? Mid = null, long? SeasonId = null, string? Url = null);
+    long? MediaId = null, long? Mid = null, long? SeasonId = null, long? RoomId = null, string? Url = null);
 
 /// <summary>识别用户粘贴的各种 B 站链接或编号。</summary>
 public static partial class LinkParser
@@ -17,6 +17,7 @@ public static partial class LinkParser
     [GeneratedRegex(@"(BV[0-9A-Za-z]{10})")] private static partial Regex Bv();
     [GeneratedRegex(@"(?:^|[^a-z0-9])av(\d{1,15})(?![0-9])", RegexOptions.IgnoreCase)] private static partial Regex Av();
     [GeneratedRegex(@"[?&]p=(\d+)")] private static partial Regex PageParam();
+    [GeneratedRegex(@"live\.bilibili\.com/(?:h5/|blanc/)?(\d+)", RegexOptions.IgnoreCase)] private static partial Regex Live();
 
     public static ParsedLink Parse(string input)
     {
@@ -25,6 +26,10 @@ public static partial class LinkParser
 
         if (Short().Match(s) is { Success: true } sm)
             return new ParsedLink(LinkKind.ShortLink, Url: "https://" + sm.Value);
+
+        // 直播间链接要在其它 bilibili.com 规则之前判断，否则会掉进 Other
+        if (Live().Match(s) is { Success: true } lm && long.TryParse(lm.Groups[1].Value, out var roomId) && roomId > 0)
+            return new ParsedLink(LinkKind.Live, RoomId: roomId, Url: s);
 
         int? page = PageParam().Match(s) is { Success: true } pm ? int.Parse(pm.Groups[1].Value) : null;
 

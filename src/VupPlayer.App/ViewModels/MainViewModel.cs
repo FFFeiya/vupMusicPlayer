@@ -15,6 +15,8 @@ public enum NavKind
     All, Favorites, Untagged, Recent, Playlist, Streamer, Uploader, Tag, Source, Suggestions,
     // 推荐专区
     Daily, Radio, Discovery, Rediscover, Fresh,
+    // 直播
+    Live,
 }
 
 public sealed partial class NavItem : ObservableObject
@@ -101,15 +103,21 @@ public sealed partial class MainViewModel : ObservableObject
 
     public void Initialize()
     {
+        RefreshLive();
         RebuildNav();
-        SelectedNav = NavItems.FirstOrDefault();
+        SelectedNav = DefaultNav;
         _ = RefreshLoginAsync();
     }
+
+    /// <summary>默认落脚的导航项。直播排在最上面，但启动时不该停在那儿。</summary>
+    NavItem DefaultNav => NavItems.FirstOrDefault(n => n.Kind != NavKind.Live) ?? NavItems[0];
 
     public void RebuildNav()
     {
         var selectedKey = SelectedNav is { } s ? (s.Kind, s.Id) : (NavKind.All, (long?)null);
         NavItems.Clear();
+        // 开播是有时效的，放最上面
+        NavItems.Add(new NavItem { Section = "直播", Kind = NavKind.Live, Name = "直播", Count = LiveCount });
         NavItems.Add(new NavItem { Section = "推荐", Kind = NavKind.Daily, Name = "每日推荐" });
         NavItems.Add(new NavItem { Section = "推荐", Kind = NavKind.Radio, Name = "私人电台" });
         NavItems.Add(new NavItem { Section = "推荐", Kind = NavKind.Discovery, Name = "B站新发现" });
@@ -138,7 +146,7 @@ public sealed partial class MainViewModel : ObservableObject
             NavItems.Add(new NavItem { Section = "订阅源", Kind = NavKind.Source, Name = (src.Kind switch { "fav" => "收藏夹 · ", "season" => "合集 · ", "space" => "UP主 · ", "discovery" => "✨ ", _ => "" }) + (src.Title ?? src.RemoteId), Id = src.Id, Count = src.VideoCount });
 
         RefreshNavCounts();
-        var again = NavItems.FirstOrDefault(n => n.Kind == selectedKey.Item1 && n.Id == selectedKey.Item2) ?? NavItems[0];
+        var again = NavItems.FirstOrDefault(n => n.Kind == selectedKey.Item1 && n.Id == selectedKey.Item2) ?? DefaultNav;
         if (!ReferenceEquals(SelectedNav, again)) SelectedNav = again;
         else RefreshTracks();
     }
@@ -163,6 +171,7 @@ public sealed partial class MainViewModel : ObservableObject
                 NavKind.Discovery => _repo.GetDiscoveryCandidates().Count,
                 NavKind.Rediscover => SafeCount(() => _mix.Rediscover().Count),
                 NavKind.Fresh => SafeCount(() => _mix.Fresh().Count),
+                NavKind.Live => LiveCount,
                 _ => n.Count,
             };
         }
@@ -189,11 +198,21 @@ public sealed partial class MainViewModel : ObservableObject
         ListSubtitle = null;
         ListActionText = null;
         OnPropertyChanged(nameof(PlayAllText));
+        OnPropertyChanged(nameof(IsLiveList));
+        if (nav?.Kind == NavKind.Live)
+        {
+            // 直播页不显示曲目，显示的是直播间卡片列表
+            Tracks.Clear();
+            RefreshLive();
+            OnPropertyChanged(nameof(ShowEmptyHint));
+            return;
+        }
         if (nav?.Kind is NavKind.Daily or NavKind.Radio or NavKind.Discovery or NavKind.Rediscover or NavKind.Fresh)
         {
             var rec = RecommendList(nav.Kind);
             Tracks.Clear();
             foreach (var t in rec.Where(t => Matches(t, q.Keyword))) Tracks.Add(t);
+            OnPropertyChanged(nameof(ShowEmptyHint));
             return;
         }
         switch (nav?.Kind)
@@ -237,7 +256,11 @@ public sealed partial class MainViewModel : ObservableObject
         Tracks.Clear();
         foreach (var t in list) Tracks.Add(t);
         ListSubtitle ??= $"{Tracks.Count} 首";
+        OnPropertyChanged(nameof(ShowEmptyHint));
     }
+
+    /// <summary>「这里还没有曲目」提示。直播页没有曲目，但不该显示这个提示。</summary>
+    public bool ShowEmptyHint => !IsLiveList && Tracks.Count == 0;
 
     /// <summary>推荐专区的列表。会顺带设置副标题和右上角的附加操作。</summary>
     IReadOnlyList<TrackView> RecommendList(NavKind kind)
@@ -313,6 +336,7 @@ public sealed partial class MainViewModel : ObservableObject
     {
         NavKind.Radio => "开始收听",
         NavKind.Discovery => "导入并播放",
+        NavKind.Live => "看直播",
         _ => "播放全部",
     };
 
@@ -321,6 +345,10 @@ public sealed partial class MainViewModel : ObservableObject
     {
         switch (SelectedNav?.Kind)
         {
+            case NavKind.Live:
+                await ImportStreamersToLiveAsync();
+                RebuildNav();
+                break;
             case NavKind.Daily:
                 _mix.Refresh();
                 RefreshTracks();
@@ -392,6 +420,10 @@ public sealed partial class MainViewModel : ObservableObject
     {
         switch (SelectedNav?.Kind)
         {
+            case NavKind.Live:
+                // 直播页的「播放全部」= 看第一个在播的
+                await WatchLiveAsync(null);
+                return;
             case NavKind.Radio:
                 // 私人电台：点哪首都从电台开始（点了具体某首就先放它）
                 await Player.StartRadioAsync(start?.Id);
@@ -504,7 +536,7 @@ public sealed partial class MainViewModel : ObservableObject
     public void DeletePlaylist(long id)
     {
         _repo.DeletePlaylist(id);
-        SelectedNav = NavItems[0];
+        SelectedNav = DefaultNav;
         RebuildNav();
     }
 
@@ -543,9 +575,19 @@ public sealed partial class MainViewModel : ObservableObject
         var inputs = LinkParser.SplitInputs(ImportText);
         if (inputs.Count == 0)
         {
-            ImportStatus = "粘贴 BV 号、视频链接、收藏夹、合集或 UP 主空间链接";
+            ImportStatus = "粘贴 BV 号、视频链接、收藏夹、合集、UP 主空间或直播间链接";
             return;
         }
+        // 直播间链接不是导入曲目，而是加一个开播提醒
+        var links = inputs.Select(LinkParser.Parse).ToList();
+        if (links.All(l => l.Kind == LinkKind.Live))
+        {
+            foreach (var l in links) await TryAddLiveAsync(l);
+            ImportText = "";
+            return;
+        }
+        inputs = inputs.Where((_, i) => links[i].Kind != LinkKind.Live).ToList();
+        foreach (var l in links.Where(l => l.Kind == LinkKind.Live)) await TryAddLiveAsync(l);
         IsImporting = true;
         _importCts = new CancellationTokenSource();
         var total = new ImportResult();
@@ -605,7 +647,7 @@ public sealed partial class MainViewModel : ObservableObject
     public void DeleteSource(long sourceId)
     {
         _repo.DeleteSource(sourceId);
-        SelectedNav = NavItems[0];
+        SelectedNav = DefaultNav;
         RebuildNav();
     }
 

@@ -206,5 +206,40 @@ static class Migrations
           value TEXT
         );
         """,
+
+        // v3：直播
+        """
+        -- 订阅的直播间。按主播 UID 唯一；允许存在曲库里还没有切片的主播（手动加的房间）。
+        -- 轮询到的状态直接存在这里，重启后还能判断「刚开播」而不是把在播的人全弹一遍。
+        CREATE TABLE live_rooms (
+          mid         INTEGER PRIMARY KEY,
+          room_id     INTEGER NOT NULL,
+          uname       TEXT,
+          streamer_id INTEGER REFERENCES streamers(id) ON DELETE SET NULL,
+          notify      INTEGER NOT NULL DEFAULT 1,
+          last_status INTEGER NOT NULL DEFAULT 0,   -- 0 未开播 / 1 直播 / 2 轮播
+          last_title  TEXT,
+          last_cover  TEXT,
+          last_area   TEXT,
+          online      INTEGER,
+          live_since  INTEGER,                      -- 本场开播时间
+          checked_at  INTEGER,
+          notified_at INTEGER,                      -- 上次推送时间，用来防重复推
+          added_at    INTEGER NOT NULL
+        );
+        CREATE INDEX ix_live_rooms_room ON live_rooms(room_id);
+
+        -- 看直播的记录。和 play_events 分开：直播没有 track_id。
+        CREATE TABLE live_events (
+          id          INTEGER PRIMARY KEY,
+          room_id     INTEGER NOT NULL,
+          mid         INTEGER,
+          title       TEXT,
+          started_at  INTEGER NOT NULL,
+          watched_sec REAL NOT NULL,
+          mode        TEXT                          -- audio / video
+        );
+        CREATE INDEX ix_live_events_time ON live_events(started_at);
+        """,
     ];
 }

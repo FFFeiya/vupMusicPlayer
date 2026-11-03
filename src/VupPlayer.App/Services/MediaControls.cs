@@ -58,10 +58,11 @@ public sealed class MediaControls : IDisposable
             switch (e.PropertyName)
             {
                 case nameof(PlayerController.Current):
+                case nameof(PlayerController.Live):
                     UpdateDisplay();
                     break;
                 case nameof(PlayerController.IsPlaying):
-                    _smtc.PlaybackStatus = _player.Current is null ? MediaPlaybackStatus.Stopped
+                    _smtc.PlaybackStatus = _player.Current is null && _player.Live is null ? MediaPlaybackStatus.Stopped
                         : _player.IsPlaying ? MediaPlaybackStatus.Playing : MediaPlaybackStatus.Paused;
                     break;
             }
@@ -76,6 +77,18 @@ public sealed class MediaControls : IDisposable
     {
         var u = _smtc.DisplayUpdater;
         u.ClearAll();
+        // 看直播时媒体浮窗显示直播间
+        if (_player.Live is { } live)
+        {
+            u.Type = MediaPlaybackType.Music;
+            u.MusicProperties.Title = live.Title ?? "直播";
+            u.MusicProperties.Artist = live.Name;
+            u.MusicProperties.AlbumTitle = "B 站直播" + (live.AreaName is { Length: > 0 } a ? " · " + a : "");
+            if (!string.IsNullOrEmpty(live.Cover) && Uri.TryCreate(live.Cover, UriKind.Absolute, out var cu))
+                u.Thumbnail = RandomAccessStreamReference.CreateFromUri(cu);
+            u.Update();
+            return;
+        }
         var t = _player.Current;
         if (t is null)
         {
