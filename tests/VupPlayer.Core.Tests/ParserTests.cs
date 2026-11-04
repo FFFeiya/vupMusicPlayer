@@ -64,6 +64,59 @@ public class TitleParserTests
         Assert.Null(s);
         Assert.Null(st);
     }
+
+    [Theory]
+    // 桃几的老切片用尖括号：开头那个是主播，后面那个才是歌名
+    [InlineData("<桃几>直播翻唱<如愿>", "如愿", "桃几")]
+    [InlineData("<桃几>直播切片<搁浅>", "搁浅", "桃几")]
+    [InlineData("<桃几>直播翻唱<影子>(升1key)", "影子", "桃几")]
+    [InlineData("<桃几>直播翻唱<左手指月>(第2版)", "左手指月", "桃几")]
+    // 开头的尖括号没闭合，只剩歌名那个分组
+    [InlineData("<桃几.直播翻唱<独角戏>", "独角戏", null)]
+    public void Guess_AngleBrackets(string title, string song, string? streamer)
+    {
+        var (s, st) = TitleParser.Guess(title, null, 1);
+        Assert.Equal(song, s);
+        if (streamer is not null) Assert.Equal(streamer, st);
+    }
+
+    [Theory]
+    // 歌名没加括号，只能靠剥掉开头的「直播翻唱」拿到
+    [InlineData("<桃几>直播翻唱 Lydia", "Lydia")]
+    [InlineData("<桃几>直播翻唱   What can I do", "What can I do")]
+    [InlineData("<桃几>直播翻唱  again（桃神圆圆版）", "again")]
+    public void Guess_GenericPrefixStripped(string title, string song)
+    {
+        var (s, _) = TitleParser.Guess(title, null, 1);
+        Assert.Equal(song, s);
+    }
+
+    [Theory]
+    // 「【歌名】- 主播 / 直播歌切」：主播在括号外，括号里就是歌名
+    [InlineData("【不老梦】- 法里达 / 直播歌切", "不老梦")]
+    [InlineData("【世界上的另一个我】- 法里达 / 直播歌切", "世界上的另一个我")]
+    [InlineData("【澎湃】- 法里达 / 直播歌切", "澎湃")]
+    public void Guess_SongInBrackets_StreamerOutside(string title, string song)
+    {
+        var (s, st) = TitleParser.Guess(title, null, 1, ["法里达"]);
+        Assert.Equal(song, s);
+        Assert.Equal("法里达", st);
+    }
+
+    [Theory]
+    // 标题是歌词或梗，不是歌名：宁可留空，让人工去填
+    [InlineData("停留在冬夜的冷风中  我不是也不想装脆弱【雾氧Uo直播翻唱】")]
+    [InlineData("底边实力歌势氪星杯落选 直播破防嗦面【雾氧Uo】")]
+    [InlineData("Happy Halloween！一首甜美可爱的日文歌【雾氧Uo直播翻唱】")]
+    // 没空格但是整句，靠 20 字上限挡住
+    [InlineData("氪星杯妮莉安Lily部分雾氧视角，碎碎念全肯定妮信的丑态！！【雾氧Uo】")]
+    [InlineData("クリームソーダとシャンデリア奶油苏打和冕形灯【雾氧Uo直播翻唱】")]
+    [InlineData("光るなら/若能绽放光芒，四月马上就来了，还有38分钟。【雾氧Uo直播翻唱】")]
+    public void Guess_LyricOrMemeTitle_NoSong(string title)
+    {
+        var (s, _) = TitleParser.Guess(title, null, 1, ["雾氧Uo"]);
+        Assert.Null(s);
+    }
 }
 
 public class LinkParserTests
